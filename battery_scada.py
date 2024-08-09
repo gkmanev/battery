@@ -21,6 +21,8 @@ class BatteryScada():
     def __init__(self, schedule_file) -> None:
         self.filename = schedule_file
         self.state_of_charge = 0
+        self.schedule = 0
+        self.battery_state = "Idle"
 
 
     def prepare_xls(self):
@@ -54,22 +56,19 @@ class BatteryScada():
             schedule_hour = row.Index.hour
             schedule_min = row.Index.minute
             if quarter_hour == schedule_hour and schedule_min == quarter_min:                            
-                schedule = row.schedule
-
-                               
-                self.state_of_charge += round(schedule/60, 2)  
-                battery_state = "Idle"              
-                if schedule > 0:
-                    battery_state = "Charging"
-                if schedule < 0:
-                    battery_state = "Discharging"                   
+                self.schedule = row.schedule                               
+                self.state_of_charge += round(self.schedule/60, 2)                          
+                if self.schedule > 0:
+                    self.battery_state = "Charging"
+                if self.schedule < 0:
+                    self.battery_state = "Discharging"                   
 
                 status_obj = {
-                    battery_state:schedule,
+                    self.battery_state:self.schedule,
                     "SoC": round(self.state_of_charge, 2)                    
                 }
                 mqtt_client.publish_message(str(status_obj))
-                print(f"sched_hour={schedule_hour}:{schedule_min} || quarter_hour={quarter_hour}:{quarter_min} || Real Time:{timenow.hour}:{timenow.minute} || schedule:{schedule}")                
+                print(f"sched_hour={schedule_hour}:{schedule_min} || quarter_hour={quarter_hour}:{quarter_min} || Real Time:{timenow.hour}:{timenow.minute} || schedule:{self.schedule}")                
             
         
     def lookup_quarterly(self, minutes):
@@ -84,9 +83,8 @@ class BatteryScada():
             return 0
         else:
             raise ValueError("Minutes must be between 0 and 59")
-
-
-
+        
+        
     def display_data(self):
         script_dir = os.path.dirname(os.path.realpath(__file__))
         picdir = os.path.join(script_dir, 'pic')
@@ -108,7 +106,7 @@ class BatteryScada():
             image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
             draw = ImageDraw.Draw(image)
             
-            current_time = time.strftime('%H:%M')
+            current_time = time.strftime('%Y-%m-%d %H:%M')
             cell_width = 80
             cell_height = 40
             # Clear the entire image
@@ -130,8 +128,8 @@ class BatteryScada():
             
             draw.text((8, 45), current_time, font=font20, fill=0)
             
-            draw.text((8, 70), "SoC: 34MW/h", font=font20, fill=0)
-            draw.text((8, 100), "Discharging: 10W", font=font20, fill=0)
+            draw.text((8, 70), f"SoC: {self.state_of_charge} MW/h", font=font20, fill=0)
+            draw.text((8, 100), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
 
             # Perform a full update            
             epd.display(epd.getbuffer(image))
