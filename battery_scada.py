@@ -55,9 +55,10 @@ class BatteryScada():
                 quarter_hour = timenow.hour                     
             schedule_hour = row.Index.hour
             schedule_min = row.Index.minute
-            if quarter_hour == schedule_hour and schedule_min == quarter_min:                            
+            if quarter_hour == schedule_hour and schedule_min == quarter_min:          
+                                                      
                 self.schedule = row.schedule                               
-                self.state_of_charge += round(self.schedule/60, 2)                          
+                self.state_of_charge += float(f"{round(self.schedule / 60, 2):.2f}")                   
                 if self.schedule > 0:
                     self.battery_state = "Charging"
                 if self.schedule < 0:
@@ -142,6 +143,10 @@ class BatteryScada():
             epd2in7_V2.epdconfig.module_exit(cleanup=True)
             exit()
 
+    def reset_soc_every_day(self):
+        self.state_of_charge = 0
+        
+
 
 if __name__ == "__main__":
     # Connect to the MQTT broker
@@ -152,6 +157,8 @@ if __name__ == "__main__":
     # Add a job to the scheduler
     scheduler.add_job(battery.prepare_xls, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(battery.display_data, CronTrigger(minute='*'))  # This runs the job every minute
+    scheduler.add_job(battery.reset_soc_every_day, CronTrigger(hour=0, minute=0))
+
     scheduler.start()
 
     try:
