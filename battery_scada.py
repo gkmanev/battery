@@ -106,7 +106,7 @@ class BatteryScada():
             image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
             draw = ImageDraw.Draw(image)
             
-            current_time = time.strftime('%Y-%m-%d %H:%M')
+            current_time = time.strftime('%d-%m-%Y %H:%M')
             cell_width = 80
             cell_height = 40
             # Clear the entire image
@@ -128,8 +128,8 @@ class BatteryScada():
             
             draw.text((8, 45), current_time, font=font20, fill=0)
             
-            draw.text((8, 70), f"SoC: {self.state_of_charge} MW/h", font=font20, fill=0)
-            draw.text((8, 100), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
+            draw.text((8, 90), f"SoC: {self.state_of_charge} MW/h", font=font20, fill=0)
+            draw.text((8, 120), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
 
             # Perform a full update            
             epd.display(epd.getbuffer(image))
