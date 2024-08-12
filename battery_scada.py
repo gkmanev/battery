@@ -26,21 +26,26 @@ class BatteryScada():
 
 
     def prepare_xls(self):
-        excel_workbook = xlrd.open_workbook(self.filename)
-        excel_worksheet = excel_workbook.sheet_by_index(0)
-        xl_date = date.today()
-        xl_date_time = str(xl_date) + "T01:15:00"
-        period = (24 * 4) + 4
-        schedule_list = []
-        i = 0
-        timeIndex = pd.date_range(start=xl_date_time, periods=period, freq="0h15min")
-        while i < period:
-            i += 1
-            xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
-            schedule_list.append(xl_schedule)
-        df = pd.DataFrame(schedule_list, index=timeIndex)
-        df.columns = ['schedule']   
-        self.prepare_and_send_status(df)
+        try:
+            excel_workbook = xlrd.open_workbook(self.filename)
+            excel_worksheet = excel_workbook.sheet_by_index(0)
+            xl_date = date.today()
+            xl_date_time = str(xl_date) + "T01:15:00"
+            period = (24 * 4) + 4
+            schedule_list = []
+            i = 0
+            timeIndex = pd.date_range(start=xl_date_time, periods=period, freq="0h15min")
+            while i < period:
+                i += 1
+                xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
+                schedule_list.append(xl_schedule)
+            df = pd.DataFrame(schedule_list, index=timeIndex)
+            df.columns = ['schedule']   
+            self.prepare_and_send_status(df)
+        except Exception as e:
+            logging.error(f"Error occurred while preparing the Excel file: {e}")
+        finally:
+            del excel_workbook
         
         
 
@@ -58,7 +63,7 @@ class BatteryScada():
             if quarter_hour == schedule_hour and schedule_min == quarter_min:          
                                                       
                 self.schedule = row.schedule                               
-                self.state_of_charge += float(f"{round(self.schedule / 60, 2):.2f}")                   
+                self.state_of_charge += self.schedule                  
                 if self.schedule > 0:
                     self.battery_state = "Charging"
                 if self.schedule < 0:
@@ -66,7 +71,8 @@ class BatteryScada():
 
                 status_obj = {
                     self.battery_state:self.schedule,
-                    "SoC": round(self.state_of_charge, 2)                    
+                    "SoC": float(f"{round(self.state_of_charge / 60, 2):.2f}")      
+           
                 }
                 mqtt_client.publish_message(str(status_obj))
                 print(f"sched_hour={schedule_hour}:{schedule_min} || quarter_hour={quarter_hour}:{quarter_min} || Real Time:{timenow.hour}:{timenow.minute} || schedule:{self.schedule}")                
@@ -129,7 +135,7 @@ class BatteryScada():
             
             draw.text((8, 45), current_time, font=font20, fill=0)
             
-            draw.text((8, 90), f"SoC: {self.state_of_charge} MW/h", font=font20, fill=0)
+            draw.text((8, 90), f"SoC: {float(f"{round(self.state_of_charge / 60, 2):.2f}")} MW/h", font=font20, fill=0)
             draw.text((8, 120), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
 
             # Perform a full update            
