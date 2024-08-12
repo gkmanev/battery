@@ -23,6 +23,7 @@ class BatteryScada():
         self.state_of_charge = 0
         self.schedule = 0
         self.battery_state = "Idle"
+        self.accumulate_charge_rounded = 0
 
 
     def prepare_xls(self):
@@ -63,7 +64,8 @@ class BatteryScada():
             if quarter_hour == schedule_hour and schedule_min == quarter_min:          
                                                       
                 self.schedule = row.schedule                               
-                self.state_of_charge += self.schedule                  
+                self.state_of_charge += self.schedule
+                self.accumulate_charge_rounded = float(f"{round(self.state_of_charge / 60, 2):.2f}")                  
                 if self.schedule > 0:
                     self.battery_state = "Charging"
                 if self.schedule < 0:
@@ -71,7 +73,7 @@ class BatteryScada():
 
                 status_obj = {
                     self.battery_state:self.schedule,
-                    "SoC": float(f"{round(self.state_of_charge / 60, 2):.2f}")      
+                    "SoC": self.accumulate_charge_rounded     
            
                 }
                 mqtt_client.publish_message(str(status_obj))
@@ -135,7 +137,7 @@ class BatteryScada():
             
             draw.text((8, 45), current_time, font=font20, fill=0)
             
-            draw.text((8, 90), f"SoC: {float(f"{round(self.state_of_charge / 60, 2):.2f}")} MW/h", font=font20, fill=0)
+            draw.text((8, 90), f"SoC: {self.accumulate_charge_rounded} MW/h", font=font20, fill=0)
             draw.text((8, 120), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
 
             # Perform a full update            
