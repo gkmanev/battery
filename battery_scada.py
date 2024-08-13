@@ -14,7 +14,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from PIL import Image, ImageDraw, ImageFont
 from waveshare_epd import epd2in7_V2
-# Connect to the MQTT broker
+
+
 logging.basicConfig(level=logging.DEBUG)
 
 class BatteryScada():
@@ -24,12 +25,14 @@ class BatteryScada():
         self.schedule = 0
         self.battery_state = "Idle"
         self.accumulate_charge_rounded = 0
+        self.excel_workbook = None
 
 
     def prepare_xls(self):
         try:
-            excel_workbook = xlrd.open_workbook(self.filename)
-            excel_worksheet = excel_workbook.sheet_by_index(0)
+            if self.excel_workbook is None:
+                self.excel_workbook = xlrd.open_workbook(self.filename)            
+            excel_worksheet = self.excel_workbook.sheet_by_index(0)
             xl_date = date.today()
             xl_date_time = str(xl_date) + "T01:15:00"
             period = (24 * 4) + 4
@@ -41,17 +44,13 @@ class BatteryScada():
                 xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
                 schedule_list.append(xl_schedule)
             df = pd.DataFrame(schedule_list, index=timeIndex)
-            df.columns = ['schedule']   
+            df.columns = ['schedule']             
             self.prepare_and_send_status(df)
-            excel_workbook.release_resources()
-            del excel_workbook
-            
+            # excel_workbook.release_resources()
+            # del excel_workbook
+
         except Exception as e:
-            logging.error(f"Error occurred while preparing the Excel file: {e}")
-        
-            
-        
-        
+            logging.error(f"Error occurred while preparing the Excel file: {e}")        
 
 
     def prepare_and_send_status(self, df):                         
