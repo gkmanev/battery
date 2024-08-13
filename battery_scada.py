@@ -43,10 +43,13 @@ class BatteryScada():
             df = pd.DataFrame(schedule_list, index=timeIndex)
             df.columns = ['schedule']   
             self.prepare_and_send_status(df)
+            excel_workbook.release_resources()
+            del excel_workbook
+            
         except Exception as e:
             logging.error(f"Error occurred while preparing the Excel file: {e}")
-        finally:
-            del excel_workbook
+        
+            
         
         
 
