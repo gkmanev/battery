@@ -27,11 +27,13 @@ class BatteryScada():
         self.accumulate_charge_rounded = 0
         self.excel_workbook = None
 
+    def open_xls_file(self):
+        self.excel_workbook = xlrd.open_workbook(self.filename)
+
 
     def prepare_xls(self):
-        try:
-            if self.excel_workbook is None:
-                self.excel_workbook = xlrd.open_workbook(self.filename)            
+        try:            
+            self.excel_workbook = xlrd.open_workbook(self.filename)            
             excel_worksheet = self.excel_workbook.sheet_by_index(0)
             xl_date = date.today()
             xl_date_time = str(xl_date) + "T01:15:00"
@@ -46,8 +48,8 @@ class BatteryScada():
             df = pd.DataFrame(schedule_list, index=timeIndex)
             df.columns = ['schedule']             
             self.prepare_and_send_status(df)
-            # excel_workbook.release_resources()
-            # del excel_workbook
+            self.excel_workbook.release_resources()
+            del self.excel_workbook
 
         except Exception as e:
             logging.error(f"Error occurred while preparing the Excel file: {e}")        
