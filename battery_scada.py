@@ -72,8 +72,10 @@ class BatteryScada():
                 self.accumulate_charge_rounded = float(f"{round(self.state_of_charge / 60, 2):.2f}")                  
                 if self.schedule > 0:
                     self.battery_state = "Charging"
-                if self.schedule < 0:
-                    self.battery_state = "Discharging"                   
+                elif self.schedule < 0:
+                    self.battery_state = "Discharging"
+                else:
+                    self.battery_state = "Idle"               
 
                 status_obj = {
                     self.battery_state:self.schedule,
