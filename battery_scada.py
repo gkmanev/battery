@@ -173,8 +173,11 @@ class BatteryScada():
         
         
     def display_data(self):
+        print("Here")
         soc = self.actual_data.get("soc", None)
-        invertor = self.actual_data.get("invertor", None)        
+        invertor = self.actual_data.get("invertor", None)   
+        print(soc)
+        print(invertor)     
         if soc is not None and invertor is not None:
             batt_status = "Idle"
             if invertor > 0:
