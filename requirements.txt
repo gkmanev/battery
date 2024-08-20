@@ -1,10 +1,13 @@
 APScheduler==3.10.4
+greenlet==3.0.3
 numpy==2.0.1
 paho-mqtt==2.1.0
 pandas==2.2.2
 python-dateutil==2.9.0.post0
 pytz==2024.1
 six==1.16.0
+SQLAlchemy==2.0.32
+typing_extensions==4.12.2
 tzdata==2024.1
 tzlocal==5.2
 xlrd==2.0.1
