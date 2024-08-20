@@ -268,7 +268,7 @@ if __name__ == "__main__":
     # Add a job to the scheduler
     scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
-    # # scheduler.add_job(battery.reset_soc_every_day, CronTrigger(hour=0, minute=0))
+    scheduler.add_job(test.display_data, CronTrigger(minute='*'))
 
     scheduler.start()
 
