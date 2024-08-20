@@ -9,6 +9,10 @@ import xlrd
 import traceback
 import time
 import logging
+from database import BatterySchedule, BatteryActualState, SessionLocal
+from sqlalchemy import Column, Integer, String, Float, DateTime, create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta,date
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -19,16 +23,14 @@ from waveshare_epd import epd2in7_V2
 logging.basicConfig(level=logging.DEBUG)
 
 class BatteryScada():
-    def __init__(self, schedule_file) -> None:
+    def __init__(self, schedule_file, round_trip=1) -> None:
         self.filename = schedule_file
-        self.state_of_charge = 0
-        self.schedule = 0
-        self.battery_state = "Idle"
-        self.accumulate_charge_rounded = 0
-        self.excel_workbook = None
-
-    def open_xls_file(self):
-        self.excel_workbook = xlrd.open_workbook(self.filename)
+        self.state_of_charge = 0        
+        self.battery_state = "Idle"        
+        self.excel_workbook = None    
+        self.actual_invertor_power = 0
+        self.round_trip = round_trip
+        self.actual_data = {}
 
 
     def prepare_xls(self):
@@ -46,46 +48,62 @@ class BatteryScada():
                 xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
                 schedule_list.append(xl_schedule)
             df = pd.DataFrame(schedule_list, index=timeIndex)
-            df.columns = ['schedule']             
-            self.prepare_and_send_status(df)
-            self.excel_workbook.release_resources()
-            del self.excel_workbook
-
+            df.columns = ['schedule']       
+            self.save_to_db(df)
+           #self.prepare_and_send_status(df)
         except Exception as e:
-            logging.error(f"Error occurred while preparing the Excel file: {e}")        
+            logging.error(f"Error occurred while preparing the Excel file: {e}") 
 
+    def save_to_db(self, df):
+        # Get the database session
+        session = SessionLocal()
+        try:
+            for row in df.itertuples():
+                
+                schedule_entry = BatterySchedule(
+                    timestamp=row.Index,
+                    battery_state="battery_state",
+                    schedule=row.schedule,               
+                )
 
-    def prepare_and_send_status(self, df):                         
-        for row in df.itertuples():
-            timenow = datetime.now()
-            quarter_min = self.lookup_quarterly(timenow.minute)                           
-            if quarter_min == 0:
-                quarter_hour = timenow.hour + 1
-            else:
-                quarter_hour = timenow.hour                     
-            schedule_hour = row.Index.hour
-            schedule_min = row.Index.minute
-            if quarter_hour == schedule_hour and schedule_min == quarter_min:          
-                                                      
-                self.schedule = row.schedule                               
-                self.state_of_charge += self.schedule
-                self.accumulate_charge_rounded = float(f"{round(self.state_of_charge / 60, 2):.2f}")                  
-                if self.schedule > 0:
-                    self.battery_state = "Charging"
-                elif self.schedule < 0:
-                    self.battery_state = "Discharging"
-                else:
-                    self.battery_state = "Idle"               
+                # Add the entry to the session
+                session.add(schedule_entry)
+                session.commit()  # Commit the transaction
+        except Exception as e:
+            session.rollback()  # Rollback in case of an error
+            print(f"Error saving status to DB: {e}")
+        finally:
+            session.close()  # Close the session   
 
-                status_obj = {
-                    self.battery_state:self.schedule,
-                    "SoC": self.accumulate_charge_rounded     
-           
-                }
-                mqtt_client.publish_message(str(status_obj))
-                print(f"sched_hour={schedule_hour}:{schedule_min} || quarter_hour={quarter_hour}:{quarter_min} || Real Time:{timenow.hour}:{timenow.minute} || schedule:{self.schedule}")                
-            
+    
+    def actual_battery_state(self):
+        timenow = datetime.now()
+        quarter_min = self.lookup_quarterly(timenow.minute)                           
+        if quarter_min == 0:
+            quarter_hour = timenow.hour + 1
+        else:
+            quarter_hour = timenow.hour   
         
+        target_timestamp = timenow.replace(hour=quarter_hour, minute=quarter_min, second=0, microsecond=0)
+        session = SessionLocal()         
+        try:
+            result = session.query(BatterySchedule).filter(
+                BatterySchedule.timestamp == target_timestamp
+            ).first()
+            
+            if result:
+                print(f"Schedule for {target_timestamp} is {result.schedule}")
+                return result.schedule
+            else:
+                print("No matching schedule found.")
+                return None
+        except Exception as e:
+            print(f"Error fetching schedule: {e}")
+            return None
+        finally:
+            session.close()             
+        
+
     def lookup_quarterly(self, minutes):
 
         if 0 <= minutes <= 14:
@@ -99,79 +117,158 @@ class BatteryScada():
         else:
             raise ValueError("Minutes must be between 0 and 59")
         
+    def update_actual_battery_state_in_db(self):
+        current_status = self.actual_battery_state()
+        if current_status is not None:            
+            self.state_of_charge += self.actual_invertor_power/60            
+            self.energy_flow_minute = self.actual_invertor_power/60
+            self.actual_invertor_power = current_status*self.round_trip
+            print(f"soc:{round(self.state_of_charge, 2):.2f} || Last Minute Flow: {self.energy_flow_minute} || Actual Inv Pow: {self.actual_invertor_power}")
+            timenow = datetime.now()
+            timestamp = timenow.replace(second=0, microsecond=0)
+            session = SessionLocal()
+            try:
+                actual_state_entry = BatteryActualState(
+                        timestamp = timestamp,
+                        battery_state_of_charge_actual = self.state_of_charge,
+                        last_min_flow = self.energy_flow_minute,
+                        invertor_power_actual = self.actual_invertor_power                
+                    )
+                session.add(actual_state_entry)
+                session.commit()  # Commit the transaction
+            except Exception as e:
+                session.rollback()  # Rollback in case of an error
+                print(f"Error saving status to DB: {e}")
+            finally:
+                session.close()  # Close the session
+
+
+    def fetch_actual_db(self):
+        timenow = datetime.now()
+        timestamp_min_res = timenow.replace(second=0, microsecond=0)
+        timestamp_previous_min = timestamp_min_res - timedelta(minutes=1)
+        print(f"Requested Timestamp Previous Min: {timestamp_previous_min}")
+        session = SessionLocal()       
+        try:
+            result = session.query(BatteryActualState).filter(
+                    BatteryActualState.timestamp == timestamp_previous_min
+                ).first()
+            if result:
+                self.actual_data = {
+                    "timestamp": result.timestamp,
+                    "soc": result.battery_state_of_charge_actual,
+                    "flow_last_min": result.last_min_flow,
+                    "invertor": result.invertor_power_actual
+                }
+                print(self.actual_data)
+                mqtt_client.publish_message(str(self.actual_data))
+                
+            else:
+                print(f"There are no results!")
+        except Exception as e:
+            print(f"Error fetching schedule: {e}")
+            return None
+        finally:
+            session.close()  
+        
         
     def display_data(self):
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        picdir = os.path.join(script_dir, 'pic')
-        libdir = os.path.join(script_dir, 'lib')
-        if os.path.exists(libdir):
-            sys.path.append(libdir)
-        try:
-            epd = epd2in7_V2.EPD()
-            epd.init()
-            epd.Clear()
-            font_path = os.path.join(picdir, 'Font.ttc')
+        soc = self.actual_data.get("soc", None)
+        invertor = self.actual_data.get("invertor", None)        
+        if soc is not None and invertor is not None:
+            batt_status = "Idle"
+            if invertor > 0:
+                batt_status = "Charging"
+            elif invertor < 0:
+                batt_status = "Discharging"
+            else:
+                batt_status = "Idle"
+            script_dir = os.path.dirname(os.path.realpath(__file__))
+            picdir = os.path.join(script_dir, 'pic')
+            libdir = os.path.join(script_dir, 'lib')
+            if os.path.exists(libdir):
+                sys.path.append(libdir)
             try:
-                font24 = ImageFont.truetype(font_path, 24)
-                font20 = ImageFont.truetype(font_path, 18)
-            except IOError as e:                
-                font24 = ImageFont.load_default()  # Use default font if the specified font is not found
-                font20 = ImageFont.load_default()
-            # Prepare the image with horizontal orientation    
-            image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
-            draw = ImageDraw.Draw(image)
-            
-            current_time = time.strftime('%d-%m-%Y %H:%M')
-            cell_width = 80
-            cell_height = 40
-            # Clear the entire image
-            draw.rectangle((0, 0, epd.height, epd.width), fill=255)
-            
-            draw.rectangle((0, 0, cell_width, cell_height), outline=0)
-            # Draw the current time at the top left corner
-            draw.text((8, 10), "Battery1", font=font20, fill=0)
-            
-            draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
-            # Draw "100MW" next to the time with adjusted spacing
-            draw.text((90, 10), "100MW/h", font=font20, fill=0)
-            
-            draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
+                epd = epd2in7_V2.EPD()
+                epd.init()
+                epd.Clear()
+                font_path = os.path.join(picdir, 'Font.ttc')
+                try:
+                    font24 = ImageFont.truetype(font_path, 24)
+                    font20 = ImageFont.truetype(font_path, 18)
+                except IOError as e:                
+                    font24 = ImageFont.load_default()  # Use default font if the specified font is not found
+                    font20 = ImageFont.load_default()
+                # Prepare the image with horizontal orientation    
+                image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
+                draw = ImageDraw.Draw(image)
+                
+                current_time = time.strftime('%d-%m-%Y %H:%M')
+                cell_width = 80
+                cell_height = 40
+                # Clear the entire image
+                draw.rectangle((0, 0, epd.height, epd.width), fill=255)
+                
+                draw.rectangle((0, 0, cell_width, cell_height), outline=0)
+                # Draw the current time at the top left corner
+                draw.text((8, 10), "Battery1", font=font20, fill=0)
+                
+                draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
+                # Draw "100MW" next to the time with adjusted spacing
+                draw.text((90, 10), "100MW/h", font=font20, fill=0)
+                
+                draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
 
 
-            # Draw "25MW" next to "100MW" with adjusted spacing
-            draw.text((190, 10), "25MW", font=font20, fill=0)
-            
-            draw.text((8, 45), current_time, font=font20, fill=0)
-            
-            draw.text((8, 90), f"SoC: {self.accumulate_charge_rounded} MW/h", font=font20, fill=0)
-            draw.text((8, 120), f"{self.battery_state}: {self.schedule} MW", font=font20, fill=0)
+                # Draw "25MW" next to "100MW" with adjusted spacing
+                draw.text((190, 10), "25MW", font=font20, fill=0)
+                
+                draw.text((8, 45), current_time, font=font20, fill=0)
+                
+                draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
+                draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
 
-            # Perform a full update            
-            epd.display(epd.getbuffer(image))
-        except IOError as e:
-            logging.info(e)
-            logging.error(traceback.format_exc())
+                # Perform a full update            
+                epd.display(epd.getbuffer(image))
+            except IOError as e:
+                logging.info(e)
+                logging.error(traceback.format_exc())
 
-        except KeyboardInterrupt:
-            logging.info("ctrl + c:")
-            epd2in7_V2.epdconfig.module_exit(cleanup=True)
-            exit()
+            except KeyboardInterrupt:
+                logging.info("ctrl + c:")
+                epd2in7_V2.epdconfig.module_exit(cleanup=True)
+                exit()
 
-    def reset_soc_every_day(self):
-        self.state_of_charge = 0
+    def empty_table(self):
+        session = SessionLocal()
+        try:
+            session.query(BatterySchedule).delete()
+            session.commit()
+            print("Table emptied successfully.")
+        except Exception as e:
+            session.rollback()
+            print(f"Error emptying table: {e}")
+        finally:
+            session.close()
         
 
 
 if __name__ == "__main__":
+
+    test = BatteryScada("schedule_1.xls", round_trip=0.97)
+    # test.empty_table()
+    # test.prepare_xls()
+
+
     # Connect to the MQTT broker
     mqtt_client.connect_client()
     # Create a scheduler instance
     scheduler = BackgroundScheduler()
-    battery = BatteryScada("schedule_1.xls")
+    
     # Add a job to the scheduler
-    scheduler.add_job(battery.prepare_xls, CronTrigger(minute='*'))  # This runs the job every minute
-    scheduler.add_job(battery.display_data, CronTrigger(minute='*'))  # This runs the job every minute
-    scheduler.add_job(battery.reset_soc_every_day, CronTrigger(hour=0, minute=0))
+    scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))  # This runs the job every minute
+    scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
+    # # scheduler.add_job(battery.reset_soc_every_day, CronTrigger(hour=0, minute=0))
 
     scheduler.start()
 
@@ -184,8 +281,7 @@ if __name__ == "__main__":
         scheduler.shutdown()
         mqtt_client.disconnect_client()
     
-    # Disconnect from the MQTT broker
-    mqtt_client.disconnect_client()
+
 
 
 
