@@ -24,7 +24,7 @@ from waveshare_epd import epd2in7_V2
 logging.basicConfig(level=logging.DEBUG)
 
 class BatteryScada():
-    def __init__(self, schedule_file, batt_id, round_trip=1) -> None:
+    def __init__(self, schedule_file, mqtt_client batt_id, round_trip=1) -> None:
         self.filename = schedule_file
         self.state_of_charge = 0        
         self.battery_state = "Idle"        
@@ -33,6 +33,7 @@ class BatteryScada():
         self.round_trip = round_trip
         self.actual_data = {}
         self.batt_id = batt_id
+        self.mqtt_client = mqtt_client
 
 
     def prepare_xls(self):
@@ -167,7 +168,7 @@ class BatteryScada():
                 print(self.actual_data)                
                 
                 json_data = json.dumps(self.actual_data)
-                mqtt_client.publish_message(json_data)
+                self.mqtt_client.publish_message(json_data)
                 
             else:
                 print(f"There are no results!")
@@ -263,13 +264,14 @@ class BatteryScada():
 
 if __name__ == "__main__":
 
-    test = BatteryScada("schedule_1.xls", batt_id="batt-0001", round_trip=0.97)
+    
     #test.empty_table()
     #test.prepare_xls()
 
 
     # Connect to the MQTT broker
     mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0001")
+    test = BatteryScada("schedule_1.xls", mqtt_client, batt_id="batt-0001", round_trip=0.97)
     mqtt_client.connect_client()
     # # Create a scheduler instance
     scheduler = BackgroundScheduler()
