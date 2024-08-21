@@ -164,11 +164,10 @@ class BatteryScada():
                     "flow_last_min": result.last_min_flow,
                     "invertor": result.invertor_power_actual
                 }
-                print(self.actual_data)
-                topic = f"battery_scada/{self.batt_id}"
-                print(topic)
+                print(self.actual_data)                
+                
                 json_data = json.dumps(self.actual_data)
-                mqtt_client.publish_message(topic, json_data)
+                mqtt_client.publish_message(json_data)
                 
             else:
                 print(f"There are no results!")
