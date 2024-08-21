@@ -165,6 +165,7 @@ class BatteryScada():
                 }
                 print(self.actual_data)
                 topic = f"battery_scada/{self.batt_id}"
+                print(topic)
                 json_data = json.dumps(self.actual_data)
                 mqtt_client.publish_message(topic, json_data)
                 
