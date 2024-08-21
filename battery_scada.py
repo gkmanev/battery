@@ -1,5 +1,5 @@
 import pandas as pd
-import mqtt_client
+# import mqtt_client
 import json
 import datetime
 import time
@@ -9,6 +9,7 @@ import xlrd
 import traceback
 import time
 import logging
+from mqtt_client import MqttClient
 from database import BatterySchedule, BatteryActualState, SessionLocal
 from sqlalchemy import Column, Integer, String, Float, DateTime, create_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -269,6 +270,7 @@ if __name__ == "__main__":
 
 
     # Connect to the MQTT broker
+    mqtt_client = MqttClient("159.89.103.242", "1883", "battery_scada/batt-0001")
     mqtt_client.connect_client()
     # # Create a scheduler instance
     scheduler = BackgroundScheduler()
