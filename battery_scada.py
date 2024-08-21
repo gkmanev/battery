@@ -164,7 +164,8 @@ class BatteryScada():
                     "invertor": result.invertor_power_actual
                 }
                 print(self.actual_data)
-                mqtt_client.publish_message(str(self.actual_data))
+                json_data = json.dumps(self.actual_data)
+                mqtt_client.publish_message(json_data)
                 
             else:
                 print(f"There are no results!")
