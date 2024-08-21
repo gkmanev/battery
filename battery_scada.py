@@ -269,7 +269,7 @@ if __name__ == "__main__":
 
 
     # Connect to the MQTT broker
-    mqtt_client = MqttClient("159.89.103.242", "1883", "battery_scada/batt-0001")
+    mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0001")
     mqtt_client.connect_client()
     # # Create a scheduler instance
     scheduler = BackgroundScheduler()
