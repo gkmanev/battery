@@ -23,7 +23,7 @@ from waveshare_epd import epd2in7_V2
 logging.basicConfig(level=logging.DEBUG)
 
 class BatteryScada():
-    def __init__(self, schedule_file, round_trip=1) -> None:
+    def __init__(self, schedule_file, batt_id, round_trip=1) -> None:
         self.filename = schedule_file
         self.state_of_charge = 0        
         self.battery_state = "Idle"        
@@ -31,13 +31,14 @@ class BatteryScada():
         self.actual_invertor_power = 0
         self.round_trip = round_trip
         self.actual_data = {}
+        self.batt_id = batt_id
 
 
     def prepare_xls(self):
         try:            
             self.excel_workbook = xlrd.open_workbook(self.filename)            
             excel_worksheet = self.excel_workbook.sheet_by_index(0)
-            xl_date = date.today()
+            xl_date = date.today() 
             xl_date_time = str(xl_date) + "T01:15:00"
             period = (24 * 4) + 4
             schedule_list = []
@@ -48,7 +49,8 @@ class BatteryScada():
                 xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
                 schedule_list.append(xl_schedule)
             df = pd.DataFrame(schedule_list, index=timeIndex)
-            df.columns = ['schedule']       
+            df.columns = ['schedule'] 
+                
             self.save_to_db(df)
            #self.prepare_and_send_status(df)
         except Exception as e:
@@ -257,17 +259,17 @@ class BatteryScada():
 
 if __name__ == "__main__":
 
-    test = BatteryScada("schedule_1.xls", round_trip=0.97)
-    # test.empty_table()
-    # test.prepare_xls()
+    test = BatteryScada("schedule_1.xls", batt_id="batt-0001", round_trip=0.97)
+    #test.empty_table()
+    #test.prepare_xls()
 
 
     # Connect to the MQTT broker
     mqtt_client.connect_client()
-    # Create a scheduler instance
+    # # Create a scheduler instance
     scheduler = BackgroundScheduler()
     
-    # Add a job to the scheduler
+    # # Add a job to the scheduler
     scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.display_data, CronTrigger(minute='*'))
@@ -281,7 +283,8 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        # Shut down the scheduler gracefully
+        
+        #Shut down the scheduler gracefully
         scheduler.shutdown()
         mqtt_client.disconnect_client()
     
