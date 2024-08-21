@@ -157,6 +157,7 @@ class BatteryScada():
                 ).first()
             if result:
                 self.actual_data = {
+                    "devId": self.batt_id,
                     "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
                     "soc": result.battery_state_of_charge_actual,
                     "flow_last_min": result.last_min_flow,
