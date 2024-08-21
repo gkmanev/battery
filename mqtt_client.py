@@ -19,7 +19,7 @@ def connect_client():
     client.loop_start()  # Start the loop to process network traffic
 
 def publish_message(payload):
-    client.publish(TOPIC, payload)
+    client.publish()
     print(f"Message '{payload}' sent to topic '{TOPIC}'")
 
 def disconnect_client():
