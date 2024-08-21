@@ -155,7 +155,7 @@ class BatteryScada():
                 ).first()
             if result:
                 self.actual_data = {
-                    "timestamp": result.timestamp,
+                    "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
                     "soc": result.battery_state_of_charge_actual,
                     "flow_last_min": result.last_min_flow,
                     "invertor": result.invertor_power_actual
@@ -271,6 +271,8 @@ if __name__ == "__main__":
     scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.display_data, CronTrigger(minute='*'))
+    scheduler.add_job(test.empty_table, CronTrigger(hour=0, minute=5))
+    scheduler.add_job(test.prepare_xls(), CronTrigger(hour=0, minute=10))
 
     scheduler.start()
 
