@@ -176,8 +176,7 @@ class BatteryScada():
         print("Here")
         soc = self.actual_data.get("soc", None)
         invertor = self.actual_data.get("invertor", None)   
-        print(soc)
-        print(invertor)     
+        
         if soc is not None and invertor is not None:
             batt_status = "Idle"
             if invertor > 0:
@@ -259,8 +258,8 @@ class BatteryScada():
 if __name__ == "__main__":
 
     test = BatteryScada("schedule_1.xls", round_trip=0.97)
-    # test.empty_table()
-    # test.prepare_xls()
+    test.empty_table()
+    test.prepare_xls()
 
 
     # Connect to the MQTT broker
