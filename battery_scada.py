@@ -24,8 +24,8 @@ from waveshare_epd import epd2in7_V2
 logging.basicConfig(level=logging.DEBUG)
 
 class BatteryScada():
-    def __init__(self, schedule_file, batt_id, round_trip=1) -> None:
-        self.filename = schedule_file
+    def __init__(self, batt_id, round_trip=1) -> None:
+        
         self.state_of_charge = 0        
         self.battery_state = "Idle"        
         self.excel_workbook = None    
@@ -34,26 +34,52 @@ class BatteryScada():
         self.actual_data = {}
         self.batt_id = batt_id
 
+    
+
+
+    def get_file_name(self, file):
+        # tomorrow = date.today()
+        # d1 = tomorrow.strftime("%d.%m.%Y")
+        # st = folder.split("_")[1].split("xls")[0]
+        # file_date = st.split('.')
+        # d = file_date[0]
+        # m = file_date[1]
+        # y = file_date[2]
+        # name_date = d + "." + m + "." + y
+        # print(f"Name Date: {name_date} || {d1}")
+        #return name_date == d1 
+        file_name = file.split("_")[0]
+        return file_name == "ZUSE"
+        
+    
 
     def prepare_xls(self):
-        try:            
-            self.excel_workbook = xlrd.open_workbook(self.filename)            
-            excel_worksheet = self.excel_workbook.sheet_by_index(0)
-            xl_date = date.today() 
-            xl_date_time = str(xl_date) + "T01:15:00"
-            period = (24 * 4) + 4
-            schedule_list = []
-            i = 0
-            timeIndex = pd.date_range(start=xl_date_time, periods=period, freq="0h15min")
-            while i < period:
-                i += 1
-                xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
-                schedule_list.append(xl_schedule)
-            df = pd.DataFrame(schedule_list, index=timeIndex)
-            df.columns = ['schedule'] 
-                
-            self.save_to_db(df)
-           #self.prepare_and_send_status(df)
+        try:          
+            fn = "schedules"
+            for root, dirs, files in os.walk(fn):                
+                xlsfiles = [f for f in files if f.endswith('.xls')]
+                for xlsfile in xlsfiles:
+                    my_file = self.get_file_name(xlsfile)                   
+                    if my_file:
+                        
+                        filepath = os.path.join(fn, xlsfile)                        
+                        excel_workbook = xlrd.open_workbook(filepath)
+                        excel_worksheet = excel_workbook.sheet_by_index(0)  
+                        #Day ahead!!!
+                        xl_date = date.today()#+ timedelta(days=1)
+                        xl_date_time = str(xl_date) + "T01:15:00"
+                        period = (24 * 4) 
+                        schedule_list = []
+                        i = 0
+                        timeIndex = pd.date_range(start=xl_date_time, periods=period, freq="0h15min")
+                        while i < period:
+                            i += 1
+                            xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
+                            schedule_list.append(xl_schedule)
+                        df = pd.DataFrame(schedule_list, index=timeIndex)
+                        df.columns = ['schedule']
+                        self.save_to_db(df)
+
         except Exception as e:
             logging.error(f"Error occurred while preparing the Excel file: {e}") 
 
@@ -263,8 +289,8 @@ class BatteryScada():
 
 if __name__ == "__main__":
 
-    test = BatteryScada("schedule_1.xls", batt_id="batt-0001", round_trip=0.97)
-    #test.empty_table()
+    test = BatteryScada(batt_id="batt-0001", round_trip=0.97)
+    test.empty_table()
     #test.prepare_xls()
 
 
