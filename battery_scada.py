@@ -290,8 +290,8 @@ class BatteryScada():
 if __name__ == "__main__":
 
     test = BatteryScada(batt_id="batt-0001", round_trip=0.97)
-    test.empty_table()
-    #test.prepare_xls()
+    #test.empty_table()
+    test.prepare_xls()
 
 
     # Connect to the MQTT broker
