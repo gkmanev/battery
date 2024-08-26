@@ -66,7 +66,7 @@ class BatteryScada():
                         excel_workbook = xlrd.open_workbook(filepath)
                         excel_worksheet = excel_workbook.sheet_by_index(0)  
                         #Day ahead!!!
-                        xl_date = date.today()#+ timedelta(days=1)
+                        xl_date = date.today() + timedelta(days=1)
                         xl_date_time = str(xl_date) + "T01:15:00"
                         period = (24 * 4) 
                         schedule_list = []
