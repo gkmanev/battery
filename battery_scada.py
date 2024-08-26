@@ -305,7 +305,7 @@ if __name__ == "__main__":
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.display_data, CronTrigger(minute='*'))
     # scheduler.add_job(test.empty_table, CronTrigger(hour=0, minute=5))
-    # scheduler.add_job(test.prepare_xls, CronTrigger(hour=0, minute=10))
+    scheduler.add_job(test.prepare_xls, CronTrigger(hour=17, minute=10))
 
     scheduler.start()
 
