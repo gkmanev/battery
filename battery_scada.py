@@ -37,6 +37,7 @@ class BatteryScada():
 
     
     def get_current_state_of_charge(self):
+        print("HERE!!!!!!!!!!!!!!!!!!!")
         # get current SoC when power ON the pi
         session = SessionLocal()
         try:
