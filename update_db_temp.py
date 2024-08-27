@@ -3,7 +3,7 @@ from datetime import datetime
 
 
 
-def save_to_db(self, df):
+def save_to_db():
     timenow = datetime.now()
     timestamp = timenow.replace(second=0, microsecond=0)
     session = SessionLocal()
@@ -21,3 +21,7 @@ def save_to_db(self, df):
         print(f"Error saving status to DB: {e}")
     finally:
         session.close()  # Close the session
+
+
+if __name__ == "__main__":
+    save_to_db()
