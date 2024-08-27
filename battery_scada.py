@@ -217,7 +217,8 @@ class BatteryScada():
                 
                 json_data = json.dumps(self.actual_data)
                 mqtt_client.publish_message(json_data)
-                self.display_data(soc, invertor)
+                
+                self.display_data(result.battery_state_of_charge_actual, result.invertor_power_actual)
 
                 
             else:
