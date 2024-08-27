@@ -217,6 +217,8 @@ class BatteryScada():
                 
                 json_data = json.dumps(self.actual_data)
                 mqtt_client.publish_message(json_data)
+                self.display_data(soc, invertor)
+
                 
             else:
                 print(f"There are no results!")
@@ -227,10 +229,7 @@ class BatteryScada():
             session.close()  
         
         
-    def display_data(self):
-        print("Here")
-        soc = self.actual_data.get("soc", None)
-        invertor = self.actual_data.get("invertor", None)   
+    def display_data(self, soc, invertor):       
         
         if soc is not None and invertor is not None:
             batt_status = "Idle"
@@ -327,7 +326,7 @@ if __name__ == "__main__":
     # # Add a job to the scheduler
     scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))  # This runs the job every minute
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
-    scheduler.add_job(test.display_data, CronTrigger(minute='*'))
+    
     # scheduler.add_job(test.empty_table, CronTrigger(hour=0, minute=5))
     scheduler.add_job(test.prepare_xls, CronTrigger(hour=17, minute=10))
 
