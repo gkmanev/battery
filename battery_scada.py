@@ -171,8 +171,13 @@ class BatteryScada():
     def update_actual_battery_state_in_db(self):
         current_status = self.actual_battery_state()
         if current_status is not None:   
-            print(self.state_of_charge)         
-            self.state_of_charge += self.actual_invertor_power/60            
+                 
+            self.state_of_charge += self.actual_invertor_power/60
+            if self.state_of_charge > 100:
+                self.state_of_charge = 100
+            if self.state_of_charge < 0:
+                self.state_of_charge = 0
+
             self.energy_flow_minute = self.actual_invertor_power/60
             self.actual_invertor_power = current_status*self.round_trip
             print(f"soc:{round(self.state_of_charge, 2):.2f} || Last Minute Flow: {self.energy_flow_minute} || Actual Inv Pow: {self.actual_invertor_power}")
