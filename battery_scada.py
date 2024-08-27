@@ -44,7 +44,9 @@ class BatteryScada():
                         .order_by(BatteryActualState.timestamp.desc())\
                         .first()
             if result:
-                self.state_of_charge = result.battery_state_of_charge_actual               
+                print(result)
+                self.state_of_charge = result.battery_state_of_charge_actual  
+                print(self.state_of_charge)             
             else:
                 print(f"There are no results!")
         except Exception as e:
