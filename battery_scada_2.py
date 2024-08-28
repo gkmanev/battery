@@ -86,7 +86,7 @@ class BatteryScada():
                         excel_workbook = xlrd.open_workbook(filepath)
                         excel_worksheet = excel_workbook.sheet_by_index(0)  
                         #Day ahead!!!
-                        xl_date = date.today()# + timedelta(days=1)
+                        xl_date = date.today() + timedelta(days=1)
                         xl_date_time = str(xl_date) + "T01:15:00"
                         period = (24 * 4) 
                         schedule_list = []
@@ -334,7 +334,7 @@ if __name__ == "__main__":
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))  # This runs the job every minute
     
     # scheduler.add_job(test.empty_table, CronTrigger(hour=0, minute=5))
-    scheduler.add_job(test.prepare_xls, CronTrigger(hour=17, minute=10))
+    scheduler.add_job(test.prepare_xls, CronTrigger(hour=18, minute=30))
 
     scheduler.start()
 

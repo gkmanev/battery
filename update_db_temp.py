@@ -10,9 +10,9 @@ def save_to_db():
     try:
         actual_state_entry = BatteryActualState(
                 timestamp = timestamp,
-                battery_state_of_charge_actual = 59.4, 
-                last_min_flow = -0.4,
-                invertor_power_actual = -24.25,              
+                battery_state_of_charge_actual = 91, 
+                last_min_flow = 0,
+                invertor_power_actual = 0,              
             )
         session.add(actual_state_entry)
         session.commit()  # Commit the transaction
