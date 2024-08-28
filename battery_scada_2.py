@@ -319,8 +319,8 @@ if __name__ == "__main__":
 
     test = BatteryScada(batt_id="batt-0002", round_trip=0.97)
     #test.get_current_state_of_charge()
-    test.empty_table()
-    #test.prepare_xls()
+    #test.empty_table()
+    test.prepare_xls()
 
 
     # Connect to the MQTT broker
