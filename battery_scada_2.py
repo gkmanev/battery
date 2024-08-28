@@ -17,8 +17,8 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta,date
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from PIL import Image, ImageDraw, ImageFont
-from waveshare_epd import epd2in7_V2
+# from PIL import Image, ImageDraw, ImageFont
+# from waveshare_epd import epd2in7_V2
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -36,8 +36,7 @@ class BatteryScada():
         self.get_current_state_of_charge()
 
     
-    def get_current_state_of_charge(self):
-        
+    def get_current_state_of_charge(self):        
         # get current SoC when power ON the pi
         session = SessionLocal()
         try:
@@ -87,7 +86,7 @@ class BatteryScada():
                         excel_workbook = xlrd.open_workbook(filepath)
                         excel_worksheet = excel_workbook.sheet_by_index(0)  
                         #Day ahead!!!
-                        xl_date = date.today() + timedelta(days=1)
+                        xl_date = date.today()# + timedelta(days=1)
                         xl_date_time = str(xl_date) + "T01:15:00"
                         period = (24 * 4) 
                         schedule_list = []
@@ -235,71 +234,72 @@ class BatteryScada():
             session.close()  
         
         
-    def display_data(self, soc, invertor):       
+    def display_data(self, soc, invertor):  
+        pass     
         
-        if soc is not None and invertor is not None:
-            batt_status = "Idle"
-            if invertor > 0:
-                batt_status = "Charging"
-            elif invertor < 0:
-                batt_status = "Discharging"
-            else:
-                batt_status = "Idle"
-            script_dir = os.path.dirname(os.path.realpath(__file__))
-            picdir = os.path.join(script_dir, 'pic')
-            libdir = os.path.join(script_dir, 'lib')
-            if os.path.exists(libdir):
-                sys.path.append(libdir)
-            try:
-                epd = epd2in7_V2.EPD()
-                epd.init()
-                epd.Clear()
-                font_path = os.path.join(picdir, 'Font.ttc')
-                try:
-                    font24 = ImageFont.truetype(font_path, 24)
-                    font20 = ImageFont.truetype(font_path, 18)
-                except IOError as e:                
-                    font24 = ImageFont.load_default()  # Use default font if the specified font is not found
-                    font20 = ImageFont.load_default()
-                # Prepare the image with horizontal orientation    
-                image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
-                draw = ImageDraw.Draw(image)
+        # if soc is not None and invertor is not None:
+        #     batt_status = "Idle"
+        #     if invertor > 0:
+        #         batt_status = "Charging"
+        #     elif invertor < 0:
+        #         batt_status = "Discharging"
+        #     else:
+        #         batt_status = "Idle"
+        #     script_dir = os.path.dirname(os.path.realpath(__file__))
+        #     picdir = os.path.join(script_dir, 'pic')
+        #     libdir = os.path.join(script_dir, 'lib')
+        #     if os.path.exists(libdir):
+        #         sys.path.append(libdir)
+        #     try:
+        #         epd = epd2in7_V2.EPD()
+        #         epd.init()
+        #         epd.Clear()
+        #         font_path = os.path.join(picdir, 'Font.ttc')
+        #         try:
+        #             font24 = ImageFont.truetype(font_path, 24)
+        #             font20 = ImageFont.truetype(font_path, 18)
+        #         except IOError as e:                
+        #             font24 = ImageFont.load_default()  # Use default font if the specified font is not found
+        #             font20 = ImageFont.load_default()
+        #         # Prepare the image with horizontal orientation    
+        #         image = Image.new('1', (epd.height, epd.width), 255)  # 255: clear the frame
+        #         draw = ImageDraw.Draw(image)
                 
-                current_time = time.strftime('%d-%m-%Y %H:%M')
-                cell_width = 80
-                cell_height = 40
-                # Clear the entire image
-                draw.rectangle((0, 0, epd.height, epd.width), fill=255)
+        #         current_time = time.strftime('%d-%m-%Y %H:%M')
+        #         cell_width = 80
+        #         cell_height = 40
+        #         # Clear the entire image
+        #         draw.rectangle((0, 0, epd.height, epd.width), fill=255)
                 
-                draw.rectangle((0, 0, cell_width, cell_height), outline=0)
-                # Draw the current time at the top left corner
-                draw.text((8, 10), "Battery1", font=font20, fill=0)
+        #         draw.rectangle((0, 0, cell_width, cell_height), outline=0)
+        #         # Draw the current time at the top left corner
+        #         draw.text((8, 10), "Battery1", font=font20, fill=0)
                 
-                draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
-                # Draw "100MW" next to the time with adjusted spacing
-                draw.text((90, 10), "100MW/h", font=font20, fill=0)
+        #         draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
+        #         # Draw "100MW" next to the time with adjusted spacing
+        #         draw.text((90, 10), "100MW/h", font=font20, fill=0)
                 
-                draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
+        #         draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
 
 
-                # Draw "25MW" next to "100MW" with adjusted spacing
-                draw.text((190, 10), "25MW", font=font20, fill=0)
+        #         # Draw "25MW" next to "100MW" with adjusted spacing
+        #         draw.text((190, 10), "25MW", font=font20, fill=0)
                 
-                draw.text((8, 45), current_time, font=font20, fill=0)
+        #         draw.text((8, 45), current_time, font=font20, fill=0)
                 
-                draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
-                draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
+        #         draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
+        #         draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
 
-                # Perform a full update            
-                epd.display(epd.getbuffer(image))
-            except IOError as e:
-                logging.info(e)
-                logging.error(traceback.format_exc())
+        #         # Perform a full update            
+        #         epd.display(epd.getbuffer(image))
+        #     except IOError as e:
+        #         logging.info(e)
+        #         logging.error(traceback.format_exc())
 
-            except KeyboardInterrupt:
-                logging.info("ctrl + c:")
-                epd2in7_V2.epdconfig.module_exit(cleanup=True)
-                exit()
+        #     except KeyboardInterrupt:
+        #         logging.info("ctrl + c:")
+        #         epd2in7_V2.epdconfig.module_exit(cleanup=True)
+        #         exit()
 
     def empty_table(self):
         session = SessionLocal()
@@ -317,14 +317,14 @@ class BatteryScada():
 
 if __name__ == "__main__":
 
-    test = BatteryScada(batt_id="batt-0001", round_trip=0.97)
+    test = BatteryScada(batt_id="batt-0002", round_trip=0.97)
     test.get_current_state_of_charge()
     #test.empty_table()
-    #test.prepare_xls()
+    test.prepare_xls()
 
 
     # Connect to the MQTT broker
-    mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0001")
+    mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0002")
     mqtt_client.connect_client()
     # # Create a scheduler instance
     scheduler = BackgroundScheduler()
