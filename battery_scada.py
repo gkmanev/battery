@@ -238,7 +238,7 @@ class BatteryScada():
             session.close()  
 
     def publish_to_blynk(self, soc, invertor, flow_one_min):
-        url = f"https://fra1.blynk.cloud/external/api/batch/update?token=lGoBJnAlQ6foKOAUgeuN6wPq7NIZxM7a&v0={soc}" 
+        url = f"https://fra1.blynk.cloud/external/api/batch/update?token=UlGw4C-tZ4MlqzwN0OlWd9Yw6wgiUPlf&v0={soc}" 
         publish = requests.get(url)  
         print(publish.status_code) 
         
