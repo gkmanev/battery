@@ -11,3 +11,4 @@ typing_extensions==4.12.2
 tzdata==2024.1
 tzlocal==5.2
 xlrd==2.0.1
+requests

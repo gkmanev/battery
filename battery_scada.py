@@ -9,6 +9,7 @@ import xlrd
 import traceback
 import time
 import logging
+import requests
 from mqtt_client import MqttClient
 from database import BatterySchedule, BatteryActualState, SessionLocal
 from sqlalchemy import Column, Integer, String, Float, DateTime, create_engine
@@ -224,6 +225,8 @@ class BatteryScada():
                 mqtt_client.publish_message(json_data)
                 
                 self.display_data(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual)
+                self.publish_to_blynk(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual, result.last_min_flow)
+
 
                 
             else:
@@ -233,6 +236,11 @@ class BatteryScada():
             return None
         finally:
             session.close()  
+
+    def publish_to_blynk(self, soc, invertor, flow_one_min):
+        url = f"https://fra1.blynk.cloud/external/api/batch/update?token=lGoBJnAlQ6foKOAUgeuN6wPq7NIZxM7a&v0={soc}" 
+        publish = requests.get(url)  
+        print(publish.status_code) 
         
         
     def display_data(self, soc, invertor):       
