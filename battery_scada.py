@@ -238,10 +238,20 @@ class BatteryScada():
             session.close()  
 
     def publish_to_blynk(self, soc, invertor, flow_one_min):
-        url = f"https://fra1.blynk.cloud/external/api/batch/update?token=UlGw4C-tZ4MlqzwN0OlWd9Yw6wgiUPlf&v0={soc}" 
-        publish = requests.get(url)  
-        print(publish.status_code) 
+        data = {
+            "v0": soc,
+            "v1": invertor,
+            "v2": flow_one_min
+        }
         
+        for pin, value in data.items():
+            url = f"https://fra1.blynk.cloud/external/api/batch/update?token=UlGw4C-tZ4MlqzwN0OlWd9Yw6wgiUPlf&{pin}={value}"
+            try:
+                response = requests.get(url)
+                response.raise_for_status()  # Raise an error for bad status codes
+                print(f"Published {pin}: {value}, Status Code: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Failed to publish {pin}: {value}, Error: {e}")
         
     def display_data(self, soc, invertor):       
         
