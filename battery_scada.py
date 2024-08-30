@@ -214,7 +214,7 @@ class BatteryScada():
                 self.actual_data = {
                     "devId": self.batt_id,
                     "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
-                    "soc": result.battery_state_of_charge_actual,
+                    "soc": max(0, min(result.battery_state_of_charge_actual, 100)),  # Ensure soc is within [0, 100]
                     "flow_last_min": result.last_min_flow,
                     "invertor": result.invertor_power_actual
                 }
@@ -223,7 +223,7 @@ class BatteryScada():
                 json_data = json.dumps(self.actual_data)
                 mqtt_client.publish_message(json_data)
                 
-                self.display_data(result.battery_state_of_charge_actual, result.invertor_power_actual)
+                self.display_data(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual)
 
                 
             else:
