@@ -180,7 +180,7 @@ class BatteryScada():
         current_status = self.actual_battery_state()
         if current_status is not None:   
                  
-            self.state_of_charge += self.actual_invertor_power/60
+            self.state_of_charge += (self.actual_invertor_power/60)*self.round_trip
             if self.state_of_charge > 100:
                 self.state_of_charge = 100
             if self.state_of_charge < 0:
@@ -223,7 +223,7 @@ class BatteryScada():
                     "devId":        self.batt_id,
                     "timestamp":    result.timestamp.strftime('%Y-%m-%d %H:%M'),
                     "soc":          max(0, min(result.battery_state_of_charge_actual, 100)),  # Ensure soc is within [0, 100]
-                    "flow_last_min":result.last_min_flow*self.round_trip,           # Roundtrip Efficiancy
+                    "flow_last_min":result.last_min_flow,           
                     "invertor":     result.invertor_power_actual
                 }
                 print(self.actual_data)                
