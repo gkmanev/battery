@@ -104,41 +104,9 @@ class BatteryScada():
             self.save_to_db(df)
 
         except Exception as e:
-            logging.error(f"Error occurred while fetching the endpoint: {e}") 
+            logging.error(f"Error occurred while fetching the endpoint: {e}")   
 
-        
     
-
-    # def prepare_xls(self):
-    #     try:          
-    #         fn = "schedules"
-    #         for root, dirs, files in os.walk(fn):                
-    #             xlsfiles = [f for f in files if f.endswith('.xls')]
-    #             for xlsfile in xlsfiles:
-    #                 my_file = self.get_file_name(xlsfile)                   
-    #                 if my_file:
-                        
-    #                     filepath = os.path.join(fn, xlsfile)                        
-    #                     excel_workbook = xlrd.open_workbook(filepath)
-    #                     excel_worksheet = excel_workbook.sheet_by_index(0)  
-    #                     #Day ahead!!!
-    #                     xl_date = date.today() + timedelta(days=1)
-    #                     xl_date_time = str(xl_date) + "T01:15:00"
-    #                     period = (24 * 4) 
-    #                     schedule_list = []
-    #                     i = 0
-    #                     timeIndex = pd.date_range(start=xl_date_time, periods=period, freq="0h15min")
-    #                     while i < period:
-    #                         i += 1
-    #                         xl_schedule = excel_worksheet.cell_value(10, 2 + i)  
-    #                         schedule_list.append(xl_schedule)
-    #                     df = pd.DataFrame(schedule_list, index=timeIndex)
-    #                     df.columns = ['schedule']
-    #                     print(df.head())
-    #                     self.save_to_db(df)
-
-    #     except Exception as e:
-    #         logging.error(f"Error occurred while preparing the Excel file: {e}") 
 
     def save_to_db(self, df):
         # Get the database session
@@ -218,8 +186,8 @@ class BatteryScada():
             if self.state_of_charge < 0:
                 self.state_of_charge = 0
 
-            self.energy_flow_minute = self.actual_invertor_power/60
-            self.actual_invertor_power = current_status*self.round_trip
+            self.energy_flow_minute = (self.actual_invertor_power/60)
+            self.actual_invertor_power = current_status
             print(f"soc:{round(self.state_of_charge, 2):.2f} || Last Minute Flow: {self.energy_flow_minute} || Actual Inv Pow: {self.actual_invertor_power}")
             timenow = datetime.now()
             timestamp = timenow.replace(second=0, microsecond=0)
@@ -252,11 +220,11 @@ class BatteryScada():
                 ).first()
             if result:
                 self.actual_data = {
-                    "devId": self.batt_id,
-                    "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
-                    "soc": max(0, min(result.battery_state_of_charge_actual, 100)),  # Ensure soc is within [0, 100]
-                    "flow_last_min": result.last_min_flow,
-                    "invertor": result.invertor_power_actual
+                    "devId":        self.batt_id,
+                    "timestamp":    result.timestamp.strftime('%Y-%m-%d %H:%M'),
+                    "soc":          max(0, min(result.battery_state_of_charge_actual, 100)),  # Ensure soc is within [0, 100]
+                    "flow_last_min":result.last_min_flow*self.round_trip,           # Roundtrip Efficiancy
+                    "invertor":     result.invertor_power_actual
                 }
                 print(self.actual_data)                
                 
