@@ -21,7 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 from waveshare_epd import epd2in7_V2
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
 
-from pymodbus.server.async_io import ModbusTcpServer
+from pymodbus.server import ModbusTcpServer
+
 
 logging.basicConfig(level=logging.DEBUG)
 
