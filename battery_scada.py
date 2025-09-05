@@ -49,10 +49,10 @@ class BatteryScada():
     def init_modbus_server(self):
         try:
             store = ModbusDeviceContext(
-                di=ModbusSequentialDataBlock(0, *100),
-                co=ModbusSequentialDataBlock(0, *100),
-                hr=ModbusSequentialDataBlock(0, *100),
-                ir=ModbusSequentialDataBlock(0, *100)
+                di=ModbusSequentialDataBlock(0, [0] * 100),
+                co=ModbusSequentialDataBlock(0, [0] * 100),
+                hr=ModbusSequentialDataBlock(0, [0] * 100),
+                ir=ModbusSequentialDataBlock(0, [0] * 100)
             )
             context = ModbusServerContext(slaves={0x00: store}, single=False)
             self.context = context
