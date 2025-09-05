@@ -19,7 +19,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from PIL import Image, ImageDraw, ImageFont
 from waveshare_epd import epd2in7_V2
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
+
 from pymodbus.server.async_io import ModbusTcpServer
 
 logging.basicConfig(level=logging.DEBUG)
@@ -46,12 +47,11 @@ class BatteryScada():
 
     def init_modbus_server(self):
         try:
-            store = ModbusSlaveContext(
+            store = ModbusDeviceContext(
                 di=ModbusSequentialDataBlock(0, *100),
                 co=ModbusSequentialDataBlock(0, *100),
                 hr=ModbusSequentialDataBlock(0, *100),
-                ir=ModbusSequentialDataBlock(0, *100),
-                zero_mode=True
+                ir=ModbusSequentialDataBlock(0, *100)
             )
             context = ModbusServerContext(slaves={0x00: store}, single=False)
             self.context = context
