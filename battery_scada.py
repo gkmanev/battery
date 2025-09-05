@@ -19,7 +19,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from PIL import Image, ImageDraw, ImageFont
 from waveshare_epd import epd2in7_V2
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
+try:
+    # pymodbus 2.x
+    from pymodbus.datastore import ModbusSlaveContext
+    HAVE_SLAVE_CTX = True
+except ImportError:
+    # pymodbus 3.x+
+    from pymodbus.datastore import ModbusDeviceContext as _DeviceContext
+    HAVE_SLAVE_CTX = False
 
 
 from pymodbus.server import ModbusTcpServer
@@ -51,16 +59,27 @@ class BatteryScada():
         try:
             zeros = [0] * 100
 
-            store = ModbusSlaveContext(
-                di=ModbusSequentialDataBlock(0, zeros.copy()),
-                co=ModbusSequentialDataBlock(0, zeros.copy()),
-                hr=ModbusSequentialDataBlock(0, zeros.copy()),
-                ir=ModbusSequentialDataBlock(0, zeros.copy()),
-                zero_mode=True,
-            )
+            if HAVE_SLAVE_CTX:
+                # old API (2.x)
+                store = ModbusSlaveContext(
+                    di=ModbusSequentialDataBlock(0, zeros.copy()),
+                    co=ModbusSequentialDataBlock(0, zeros.copy()),
+                    hr=ModbusSequentialDataBlock(0, zeros.copy()),
+                    ir=ModbusSequentialDataBlock(0, zeros.copy()),
+                    zero_mode=True,  # 0-based addressing
+                )
+            else:
+                # new API (3.x) – DeviceContext does not accept zero_mode
+                store = _DeviceContext(
+                    di=ModbusSequentialDataBlock(0, zeros.copy()),
+                    co=ModbusSequentialDataBlock(0, zeros.copy()),
+                    hr=ModbusSequentialDataBlock(0, zeros.copy()),
+                    ir=ModbusSequentialDataBlock(0, zeros.copy()),
+                )
 
-            # Most compatible: positional args, single=True
-            context = ModbusServerContext(store, True)  # same as single=True
+            # Use positional args; older/newer versions differ in keywords
+            # single=True means a single shared datastore for all unit IDs
+            context = ModbusServerContext(store, True)
             self.context = context
 
             server = ModbusTcpServer(context, address=("0.0.0.0", 5020))
@@ -69,7 +88,6 @@ class BatteryScada():
             )
             self.modbus_thread.start()
             logging.info("Modbus server started in a separate thread.")
-
         except Exception as e:
             logging.error(f"Error initializing Modbus server: {e}")
             logging.error(traceback.format_exc())
