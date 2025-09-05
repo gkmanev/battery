@@ -19,7 +19,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from PIL import Image, ImageDraw, ImageFont
 from waveshare_epd import epd2in7_V2
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
+
 
 from pymodbus.server import ModbusTcpServer
 
@@ -48,18 +49,27 @@ class BatteryScada():
 
     def init_modbus_server(self):
         try:
-            store = ModbusDeviceContext(
-                di=ModbusSequentialDataBlock(0, [0] * 100),
-                co=ModbusSequentialDataBlock(0, [0] * 100),
-                hr=ModbusSequentialDataBlock(0, [0] * 100),
-                ir=ModbusSequentialDataBlock(0, [0] * 100)
+            zeros = [0] * 100
+
+            store = ModbusSlaveContext(
+                di=ModbusSequentialDataBlock(0, zeros.copy()),
+                co=ModbusSequentialDataBlock(0, zeros.copy()),
+                hr=ModbusSequentialDataBlock(0, zeros.copy()),
+                ir=ModbusSequentialDataBlock(0, zeros.copy()),
+                zero_mode=True,
             )
-            context = ModbusServerContext(slaves={0x00: store}, single=False)
+
+            # Most compatible: positional args, single=True
+            context = ModbusServerContext(store, True)  # same as single=True
             self.context = context
+
             server = ModbusTcpServer(context, address=("0.0.0.0", 5020))
-            self.modbus_thread = threading.Thread(target=self.start_modbus_thread, args=(server,), daemon=True)
+            self.modbus_thread = threading.Thread(
+                target=self.start_modbus_thread, args=(server,), daemon=True
+            )
             self.modbus_thread.start()
             logging.info("Modbus server started in a separate thread.")
+
         except Exception as e:
             logging.error(f"Error initializing Modbus server: {e}")
             logging.error(traceback.format_exc())
