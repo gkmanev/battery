@@ -9,6 +9,7 @@ import xlrd
 import traceback
 import logging
 import requests
+import asyncio
 from mqtt_client import MqttClient
 from database import BatterySchedule, BatteryActualState, SessionLocal
 from sqlalchemy import Column, Integer, String, Float, DateTime, create_engine
@@ -29,8 +30,8 @@ except ImportError:
     from pymodbus.datastore import ModbusDeviceContext as _DeviceContext
     HAVE_SLAVE_CTX = False
 
-
-from pymodbus.server import ModbusTcpServer
+# IMPORTANT: use StartTcpServer (sync helper) or StartAsyncTcpServer (async helper)
+from pymodbus.server import StartTcpServer, StartAsyncTcpServer  # both available on 3.x
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -48,9 +49,10 @@ class BatteryScada():
         self.get_current_state_of_charge()
         self.init_modbus_server()
 
-    def start_modbus_thread(self, server):
+    def start_modbus_thread(self):
         try:
-            server.serve_forever()
+            # Blocks inside this thread; creates/owns its own asyncio loop internally
+            StartTcpServer(context=self.context, address=("0.0.0.0", 5020))
         except Exception as e:
             logging.error(f"Modbus Server encountered exception: {e}")
             logging.error(traceback.format_exc())
@@ -60,16 +62,14 @@ class BatteryScada():
             zeros = [0] * 100
 
             if HAVE_SLAVE_CTX:
-                # old API (2.x)
                 store = ModbusSlaveContext(
                     di=ModbusSequentialDataBlock(0, zeros.copy()),
                     co=ModbusSequentialDataBlock(0, zeros.copy()),
                     hr=ModbusSequentialDataBlock(0, zeros.copy()),
                     ir=ModbusSequentialDataBlock(0, zeros.copy()),
-                    zero_mode=True,  # 0-based addressing
+                    zero_mode=True,
                 )
             else:
-                # new API (3.x) – DeviceContext does not accept zero_mode
                 store = _DeviceContext(
                     di=ModbusSequentialDataBlock(0, zeros.copy()),
                     co=ModbusSequentialDataBlock(0, zeros.copy()),
@@ -77,14 +77,13 @@ class BatteryScada():
                     ir=ModbusSequentialDataBlock(0, zeros.copy()),
                 )
 
-            # Use positional args; older/newer versions differ in keywords
-            # single=True means a single shared datastore for all unit IDs
+            # Positional args for broad compatibility; single=True
             context = ModbusServerContext(store, True)
             self.context = context
 
-            server = ModbusTcpServer(context, address=("0.0.0.0", 5020))
+            # Spin up the server in a daemon thread
             self.modbus_thread = threading.Thread(
-                target=self.start_modbus_thread, args=(server,), daemon=True
+                target=self.start_modbus_thread, daemon=True
             )
             self.modbus_thread.start()
             logging.info("Modbus server started in a separate thread.")
