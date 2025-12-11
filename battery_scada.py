@@ -231,11 +231,27 @@ class BatteryScada:
             raise ValueError("Minutes must be between 0 and 59")
 
     def update_actual_battery_state_in_db(self):
+        """Compute one-minute step of battery state and honor Modbus overrides.
 
+        Behaviour overview:
+        - The baseline power command is read from the schedule table (kW).
+        - A Modbus write to HR10 overrides that baseline until it is cleared.
+        - The requested power is clipped to the inverter rating (±bess_power_kw).
+        - If an override would violate the SoC band, the override is cleared and
+          we immediately fall back to the baseline schedule for this step.
+            * Discharge beyond ``soc_min_percent`` → revert to baseline.
+            * Charge beyond ``soc_max_percent`` → revert to baseline.
+        - After reverting we re-check the SoC limits once to ensure the
+          scheduled value itself does not push outside the band; if it does,
+          the command is set to 0 kW for that edge case.
+        - The resulting power is applied to compute SoC/energy deltas and is
+          written to the status table with the minute-resolution timestamp.
+        """
 
         baseline_kw = self.actual_battery_state()  # from DB schedule (kW)
         # If Modbus setpoint has been written, use it. Otherwise use schedule.
-        if self.p_setpoint_kw is not None:
+        modbus_override = self.p_setpoint_kw is not None
+        if modbus_override:
             requested_power_kw = self.p_setpoint_kw
         else:
             requested_power_kw = baseline_kw
@@ -249,15 +265,37 @@ class BatteryScada:
         # Limit power to ± rated power
         requested_power_kw = max(-self.bess_power_kw, min(self.bess_power_kw, requested_power_kw))
         # Enforce SoC band (AS requirement) ----
-        # If we are at or below min SoC, discharging (negative power) is not allowed
-        if self.state_of_charge <= self.soc_min_percent and requested_power_kw < 0:
-            print("Blocking discharge: SoC at/under minimum for AS support.")
-            requested_power_kw = 0.0
+        # If a Modbus setpoint is pushing us beyond SoC bounds, fall back to the baseline schedule.
+        while True:
+            limit_hit = False
+            if self.state_of_charge <= self.soc_min_percent and requested_power_kw < 0:
+                if modbus_override:
+                    logging.info(
+                        "Discharge blocked by SoC minimum; reverting to baseline schedule."
+                    )
+                    self.p_setpoint_kw = None
+                    requested_power_kw = baseline_kw
+                    modbus_override = False
+                    limit_hit = True
+                else:
+                    print("Blocking discharge: SoC at/under minimum for AS support.")
+                    requested_power_kw = 0.0
+            if self.state_of_charge >= self.soc_max_percent and requested_power_kw > 0:
+                if modbus_override:
+                    logging.info(
+                        "Charge blocked by SoC maximum; reverting to baseline schedule."
+                    )
+                    self.p_setpoint_kw = None
+                    requested_power_kw = baseline_kw
+                    modbus_override = False
+                    limit_hit = True
+                else:
+                    print("Blocking charge: SoC at/over maximum for AS support.")
+                    requested_power_kw = 0.0
 
-        # If we are at or above max SoC, charging (positive power) is not allowed
-        if self.state_of_charge >= self.soc_max_percent and requested_power_kw > 0:
-            print("Blocking charge: SoC at/over maximum for AS support.")
-            requested_power_kw = 0.0
+            # After falling back to baseline, re-check limits once to ensure compliance.
+            if not limit_hit:
+                break
 
         # Compute SoC change for 1 minute step ----        
         dt_hours = 1.0 / 60.0  # 1 minute step        
