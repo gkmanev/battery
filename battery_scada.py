@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import logging
@@ -8,7 +9,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from typing import Optional
-
+from dotenv import load_dotenv
 import pandas as pd
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,6 +29,7 @@ from waveshare_epd import epd2in7_V2
 
 from database import BatteryActualState, BatterySchedule, SessionLocal
 from mqtt_client import MqttClient
+load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -42,6 +44,10 @@ class BatteryScada:
         schedule_url: Optional[str] = None,
         blynk_token: Optional[str] = None,
         mqtt_topic: Optional[str] = None,
+        soc_min_percent: float = 25.0,
+        soc_max_percent: float = 80.0,
+        bess_power_kw: float = 1000.0,  # 1 MW
+        bess_capacity_kwh: float = 1000.0,  # 1 MWh
     ) -> None:
         self.state_of_charge = 0
         self.battery_state = "Idle"
@@ -50,13 +56,19 @@ class BatteryScada:
         self.round_trip = round_trip
         self.actual_data = {}
         self.batt_id = batt_id
+        self.soc_min_percent = soc_min_percent
+        self.soc_max_percent = soc_max_percent
+        self.bess_power_kw = bess_power_kw
+        self.bess_capacity_kwh = bess_capacity_kwh
+        self.p_setpoint_kw = None  # active power setpoint from Modbus or schedule (kW)
+
         self.modbus_thread = None
         self.mqtt_client = mqtt_client
-        self.schedule_url = schedule_url or os.environ.get(
+        self.schedule_url = schedule_url or os.getenv(
             "BATTERY_SCHEDULE_URL", "http://85.14.6.37:16543/api/schedule/"
         )
-        self.blynk_token = blynk_token or os.environ.get("BLYNK_TOKEN")
-        self.mqtt_topic = mqtt_topic or os.environ.get(
+        self.blynk_token = blynk_token or os.getenv("BLYNK_TOKEN")
+        self.mqtt_topic = mqtt_topic or os.getenv(
             "BATTERY_MQTT_TOPIC", f"battery_scada/{self.batt_id}"
         )
         self._last_displayed = None
@@ -84,24 +96,40 @@ class BatteryScada:
         try:
             zeros = [0] * 100
 
-            if HAVE_SLAVE_CTX:
-                store = ModbusSlaveContext(
-                    di=ModbusSequentialDataBlock(0, zeros.copy()),
-                    co=ModbusSequentialDataBlock(0, zeros.copy()),
-                    hr=ModbusSequentialDataBlock(0, zeros.copy()),
-                    ir=ModbusSequentialDataBlock(0, zeros.copy()),
-                    zero_mode=True,
-                )
-            else:
-                store = _DeviceContext(
-                    di=ModbusSequentialDataBlock(0, zeros.copy()),
-                    co=ModbusSequentialDataBlock(0, zeros.copy()),
-                    hr=ModbusSequentialDataBlock(0, zeros.copy()),
-                    ir=ModbusSequentialDataBlock(0, zeros.copy()),
-                )
+            def on_hr_write(address, values):
+                # HR10 is our active power setpoint (kW * 10, signed)
+                # In pymodbus 3.x, the address passed here is 1-based, so HR10 comes as address=11
+                SETPOINT_REG = 11  # Changed from 10 to 11 for pymodbus 3.x
+                logging.debug(f"on_hr_write called: address={address}, values={values}")
+                
+                # Check if SETPOINT_REG is within the written range
+                if address <= SETPOINT_REG < address + len(values):
+                    idx = SETPOINT_REG - address
+                    raw = values[idx]
 
-            context = ModbusServerContext(store, True)
-            self.context = context
+                    # Interpret as signed 16-bit
+                    if raw >= 0x8000:
+                        raw = raw - 0x10000
+
+                    p_kw = raw / 10.0
+                    self.set_active_power_setpoint(p_kw)
+                    logging.info(f"Modbus HR10 (internal addr {SETPOINT_REG}) written: raw={raw}, p_kw={p_kw}")
+                else:
+                    logging.debug(f"Write to address {address} does not affect setpoint register {SETPOINT_REG}")
+
+            # Create the callback-enabled holding register block
+            hr_block = CallbackDataBlock(0, zeros.copy(), on_write=on_hr_write)
+
+            # pymodbus 3.x - ModbusSlaveContext without zero_mode
+            store = ModbusSlaveContext(
+                di=ModbusSequentialDataBlock(0, zeros.copy()),
+                co=ModbusSequentialDataBlock(0, zeros.copy()),
+                hr=hr_block,  # Use the callback block here
+                ir=ModbusSequentialDataBlock(0, zeros.copy()),
+            )
+
+            # In pymodbus 3.x, use 'slaves' parameter
+            self.context = ModbusServerContext(slaves=store, single=True)
 
             self.modbus_thread = threading.Thread(
                 target=self.start_modbus_thread, daemon=True
@@ -112,6 +140,14 @@ class BatteryScada:
             logging.error(f"Error initializing Modbus server: {e}")
             logging.error(traceback.format_exc())
 
+    def set_active_power_setpoint(self, p_kw: float) -> None:
+        """
+        Receive an active power setpoint in kW.
+        Positive = charge, Negative = discharge.
+        """
+        self.p_setpoint_kw = float(p_kw)
+        logging.info(f"New active power setpoint (from Modbus): {self.p_setpoint_kw:.1f} kW")
+
     def get_current_state_of_charge(self):
         try:
             with SessionLocal() as session:
@@ -119,7 +155,7 @@ class BatteryScada:
                 if result:
                     print(result)
                     self.state_of_charge = result.battery_state_of_charge_actual
-                    print(self.state_of_charge)
+                    print(f"Current SoC: {self.state_of_charge}")
                 else:
                     print("There are no results!")
         except Exception as e:
@@ -129,16 +165,16 @@ class BatteryScada:
     def fetch_schedule_endpoint(self):
         try:
             response = requests.get(self.schedule_url, timeout=10)
-            data = response.json()
+            data = response.json()            
             filtered_data = [entry for entry in data if entry['devId'] == self.batt_id]
-            df = pd.DataFrame(filtered_data)
+            df = pd.DataFrame(filtered_data)            
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
             df.set_index('timestamp', inplace=True)
             df = df[['invertor']]
             df['timestamp'] = df.index
             df = df.rename(columns={'invertor': 'schedule'})
             df = df.reset_index(drop=True)
-            df = df[['timestamp', 'schedule']]
+            df = df[['timestamp', 'schedule']]            
             self.save_to_db(df)
         except Exception as e:
             logging.error(f"Error occurred while fetching the endpoint: {e}")
@@ -159,7 +195,7 @@ class BatteryScada:
                         session.add(schedule_entry)
                 session.commit()
         except Exception as e:
-            logging.error(f"Error saving status to DB: {e}")
+            logging.error(f"Error saving schedule to DB: {e}")
 
     def actual_battery_state(self):
         timenow = datetime.now()
@@ -174,13 +210,13 @@ class BatteryScada:
                 ).first()
                 if result:
                     print(f"Schedule for {target_timestamp} is {result.schedule}")
-                    return result.schedule
+                    return float(result.schedule)
                 else:
                     print("No matching schedule found.")
-                    return None
+                    return 0.0
         except Exception as e:
             print(f"Error fetching schedule: {e}")
-            return None
+            return 0.0
 
     def lookup_quarterly(self, minutes):
         if 0 <= minutes <= 14:
@@ -195,30 +231,74 @@ class BatteryScada:
             raise ValueError("Minutes must be between 0 and 59")
 
     def update_actual_battery_state_in_db(self):
-        current_status = self.actual_battery_state()
-        if current_status is not None:
-            energy_flow_minute = (current_status / 60) * self.round_trip
-            self.state_of_charge += energy_flow_minute
-            self.state_of_charge = max(0, min(self.state_of_charge, 100))
-            self.energy_flow_minute = current_status / 60
-            self.actual_invertor_power = current_status
-            print(
-                f"soc:{round(self.state_of_charge, 2):.2f} || Last Minute Flow: {self.energy_flow_minute} || Actual Inv Pow: {self.actual_invertor_power}"
-            )
-            timenow = datetime.now()
-            timestamp = timenow.replace(second=0, microsecond=0)
-            try:
-                with SessionLocal() as session:
-                    actual_state_entry = BatteryActualState(
-                        timestamp=timestamp,
-                        battery_state_of_charge_actual=self.state_of_charge,
-                        last_min_flow=self.energy_flow_minute,
-                        invertor_power_actual=self.actual_invertor_power
-                    )
-                    session.add(actual_state_entry)
-                    session.commit()
-            except Exception as e:
-                logging.error(f"Error saving status to DB: {e}")
+
+
+        baseline_kw = self.actual_battery_state()  # from DB schedule (kW)
+        # If Modbus setpoint has been written, use it. Otherwise use schedule.
+        if self.p_setpoint_kw is not None:
+            requested_power_kw = self.p_setpoint_kw
+        else:
+            requested_power_kw = baseline_kw
+
+        logging.info(
+            f"Baseline (schedule): {baseline_kw:.1f} kW | "
+            f"Requested P (after Modbus): {requested_power_kw:.1f} kW | "
+            f"SoC: {self.state_of_charge:.2f}%"
+        )
+        
+        # Limit power to ± rated power
+        requested_power_kw = max(-self.bess_power_kw, min(self.bess_power_kw, requested_power_kw))
+        # Enforce SoC band (AS requirement) ----
+        # If we are at or below min SoC, discharging (negative power) is not allowed
+        if self.state_of_charge <= self.soc_min_percent and requested_power_kw < 0:
+            print("Blocking discharge: SoC at/under minimum for AS support.")
+            requested_power_kw = 0.0
+
+        # If we are at or above max SoC, charging (positive power) is not allowed
+        if self.state_of_charge >= self.soc_max_percent and requested_power_kw > 0:
+            print("Blocking charge: SoC at/over maximum for AS support.")
+            requested_power_kw = 0.0
+
+        # Compute SoC change for 1 minute step ----        
+        dt_hours = 1.0 / 60.0  # 1 minute step        
+        energy_change_kwh = requested_power_kw * dt_hours  # kW * h = kWh
+
+        # Apply round-trip efficiency on charging only (simple model)
+        if energy_change_kwh > 0:
+            energy_change_kwh *= self.round_trip
+
+        # Convert to SoC % change: ΔSoC = (ΔE / E_cap) * 100
+        delta_soc = (energy_change_kwh / self.bess_capacity_kwh) * 100.0
+
+        # ---- 4) Update SoC and clamp to [0,100] ----
+        self.state_of_charge += delta_soc
+        self.state_of_charge = max(0.0, min(100.0, self.state_of_charge))
+
+        # For logging & other variables consistent with your existing code
+        self.energy_flow_minute = requested_power_kw / 60.0  # kWh/min "equivalent"
+        self.actual_invertor_power = requested_power_kw
+
+        print(
+            f"SoC: {self.state_of_charge:.2f}% || "
+            f"Last Minute Energy Change: {energy_change_kwh:.4f} kWh || "
+            f"Actual Inv Pow: {self.actual_invertor_power:.1f} kW"
+        )
+
+        timenow = datetime.now()
+        timestamp = timenow.replace(second=0, microsecond=0)
+        try:
+            with SessionLocal() as session:
+                actual_state_entry = BatteryActualState(
+                    timestamp=timestamp,
+                    battery_state_of_charge_actual=self.state_of_charge,
+                    last_min_flow=self.energy_flow_minute,
+                    invertor_power_actual=self.actual_invertor_power
+                )
+                session.add(actual_state_entry)
+                session.commit()
+        except Exception as e:
+            logging.error(f"Error saving status to DB: {e}")
+
 
     def fetch_actual_db(self):
         timenow = datetime.now()
@@ -231,9 +311,11 @@ class BatteryScada:
                     BatteryActualState.timestamp == timestamp_previous_min
                 ).first()
                 if result:
-                    soc_safe = max(0, min(65535, int(result.battery_state_of_charge_actual))) if result.battery_state_of_charge_actual is not None else 0
+                    soc_scaled = max(0, min(10000, int(result.battery_state_of_charge_actual * 100)))  # 0-10000
+                    power_scaled = int(result.invertor_power_actual * 10)  # kW * 10
+
                     try:
-                        self.context[0x00].setValues(3, 0, [soc_safe, 1])
+                        self.context[0x00].setValues(3, 0, [soc_scaled, power_scaled])
                     except Exception as e:
                         logging.error(f"Error updating Modbus register: {e}")
                     self.actual_data = {
@@ -242,12 +324,11 @@ class BatteryScada:
                         "soc": max(0, min(result.battery_state_of_charge_actual, 100)),
                         "flow_last_min": result.last_min_flow,
                         "invertor": result.invertor_power_actual
-                    }
-                    print(self.actual_data)
+                    }                    
                     json_data = json.dumps(self.actual_data)
                     if self.mqtt_client:
                         self.mqtt_client.publish_message(json_data)
-                    self.display_data(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual)
+                    #self.display_data(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual)
                     self.publish_to_blynk(
                         max(0, min(result.battery_state_of_charge_actual, 100)),
                         result.invertor_power_actual,
@@ -341,11 +422,34 @@ class BatteryScada:
             print(f"Error emptying table: {e}")
 
 
+class CallbackDataBlock(ModbusSequentialDataBlock):
+    """
+    DataBlock that calls a callback whenever values are written.
+    Used for getting active power setpoint from Modbus HR.
+    """
+    def __init__(self, address, values, on_write=None):
+        super().__init__(address, values)
+        self.on_write = on_write
+
+    def setValues(self, address, values):
+        # Let the parent store the values
+        super().setValues(address, values)
+
+        # Call callback (if any)
+        if self.on_write:
+            try:
+                self.on_write(address, values)
+            except Exception as e:
+                logging.error(f"Error in Modbus write callback: {e}")
+
+
+
 if __name__ == "__main__":
+
     mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0001")
     mqtt_client.connect_client()
-    test = BatteryScada(batt_id="batt-0001", round_trip=0.97, mqtt_client=mqtt_client)
-    scheduler = BackgroundScheduler()
+    test = BatteryScada(batt_id="batt1", round_trip=0.97, mqtt_client=mqtt_client)
+    scheduler = BackgroundScheduler()    
     scheduler.add_job(test.fetch_schedule_endpoint, CronTrigger(minute='*'))
     scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))
     scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))

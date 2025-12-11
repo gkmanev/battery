@@ -3,6 +3,14 @@ from datetime import datetime
 
 
 
+def fetch_db():
+    with SessionLocal() as session:
+        result = session.query(BatteryActualState).order_by(BatteryActualState.timestamp.desc()).first()
+        print(result.battery_state_of_charge_actual)
+            
+
+
+
 def save_to_db():
     timenow = datetime.now()
     timestamp = timenow.replace(second=0, microsecond=0)
@@ -24,4 +32,6 @@ def save_to_db():
 
 
 if __name__ == "__main__":
-    save_to_db()
+    fetch_db()
+
+
