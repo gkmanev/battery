@@ -316,11 +316,12 @@ class BatteryScada:
         self.energy_flow_minute = requested_power_kw / 60.0  # kWh/min "equivalent"
         self.actual_invertor_power = requested_power_kw
 
-        print(
-            f"SoC: {self.state_of_charge:.2f}% || "
-            f"Last Minute Energy Change: {energy_change_kwh:.4f} kWh || "
-            f"Actual Inv Pow: {self.actual_invertor_power:.1f} kW"
-        )
+        status_payload = {
+            "soc_percent": round(self.state_of_charge, 2),
+            "bess_capacity_kwh": self.bess_capacity_kwh,
+            "invertor_power_kw": round(self.actual_invertor_power, 1),
+        }
+        print(f"\033[32m{json.dumps(status_payload)}\033[0m")
 
         timenow = datetime.now()
         timestamp = timenow.replace(second=0, microsecond=0)
@@ -395,8 +396,8 @@ class BatteryScada:
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
                 #print(f"Published {pin}: {value}, Status Code: {response.status_code}")
-            except requests.exceptions.RequestException as e:
-                print(f"Failed to publish {pin}: {value}, Error: {e}")
+            except requests.exceptions.RequestException:
+                logging.error("Failed to publish %s to Blynk.", pin)
 
     # def display_data(self, soc, invertor):
     #     if soc is not None and invertor is not None:
