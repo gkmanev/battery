@@ -32,6 +32,10 @@ from mqtt_client import MqttClient
 load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+blynk_logger = logging.getLogger("blynk")
+blynk_logger.setLevel(logging.WARNING)
 
 
 class BatteryScada:
@@ -409,7 +413,7 @@ class BatteryScada:
                 response.raise_for_status()
                 #print(f"Published {pin}: {value}, Status Code: {response.status_code}")
             except requests.exceptions.RequestException:
-                logging.error("Failed to publish %s to Blynk.", pin)
+                blynk_logger.debug("Failed to publish %s to Blynk.", pin)
 
     # def display_data(self, soc, invertor):
     #     if soc is not None and invertor is not None:
