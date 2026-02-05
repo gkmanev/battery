@@ -1,7 +1,7 @@
 from pymodbus.client import ModbusTcpClient
 
-HOST = "127.0.0.1"
-PORT = 5020
+HOST = "85.14.6.37"
+PORT = 16598
 SETPOINT_REG = 10
 SOC_REG = 0
 POWER_REG = 1
@@ -35,7 +35,7 @@ def read_status():
     print(f"SoC: {soc:.2f}% | Actual power: {power_kw:.1f} kW")
 
 # Test:
-write_setpoint_kw(800)   # discharge 300 kW
+write_setpoint_kw(-800)   # discharge 300 kW
 read_status()
 
 # write_setpoint_kw(500)    # charge 500 kW
