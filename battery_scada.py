@@ -61,6 +61,8 @@ class BatteryScada:
         self.bess_power_kw = bess_power_kw
         self.bess_capacity_kwh = bess_capacity_kwh
         self.p_setpoint_kw = None  # active power setpoint from Modbus or schedule (kW)
+        self._last_power_kw = None
+        self._last_power_timestamp = None
 
         self.modbus_thread = None
         self.mqtt_client = mqtt_client
@@ -315,15 +317,25 @@ class BatteryScada:
         # For logging & other variables consistent with your existing code
         self.energy_flow_minute = requested_power_kw / 60.0  # kWh/min "equivalent"
         self.actual_invertor_power = requested_power_kw
+        timenow = datetime.now()
+        ramp_rate_kw_per_min = None
+        if self._last_power_kw is not None and self._last_power_timestamp is not None:
+            time_delta_seconds = (timenow - self._last_power_timestamp).total_seconds()
+            if time_delta_seconds > 0:
+                ramp_rate_kw_per_min = (
+                    (self.actual_invertor_power - self._last_power_kw) / time_delta_seconds * 60.0
+                )
+        self._last_power_kw = self.actual_invertor_power
+        self._last_power_timestamp = timenow
 
         status_payload = {
             "soc_percent": round(self.state_of_charge, 2),
             "bess_capacity_kwh": self.bess_capacity_kwh,
             "invertor_power_kw": round(self.actual_invertor_power, 1),
+            "ramp_rate_kw_per_min": None if ramp_rate_kw_per_min is None else round(ramp_rate_kw_per_min, 2),
         }
         print(f"\033[32m{json.dumps(status_payload)}\033[0m")
 
-        timenow = datetime.now()
         timestamp = timenow.replace(second=0, microsecond=0)
         try:
             with SessionLocal() as session:
