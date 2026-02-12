@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import traceback
+import struct
 from datetime import datetime, timedelta
 from typing import Optional
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ import pandas as pd
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-#from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
 try:
     # pymodbus 2.x
@@ -25,13 +26,55 @@ except ImportError:
     from pymodbus.datastore import ModbusDeviceContext as _DeviceContext
     HAVE_SLAVE_CTX = False
 from pymodbus.server import StartAsyncTcpServer
-#from waveshare_epd import epd2in7_V2
+from waveshare_epd import epd2in7_V2
 
 from database import BatteryActualState, BatterySchedule, SessionLocal
 from mqtt_client import MqttClient
 load_dotenv()
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+
+# Reduce noise from third-party loggers.
+for _logger_name in ("apscheduler", "urllib3", "asyncio", "tzlocal"):
+    logging.getLogger(_logger_name).setLevel(logging.WARNING)
+logging.getLogger("pymodbus").setLevel(logging.WARNING)
+
+
+class _PymodbusSetValuesFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "setValues" not in msg:
+            return False
+
+        # Show status writes (SoC + power), setpoint writes, and startup ratings.
+        if "address-15: count-4" in msg or "address-14: count-4" in msg:
+            return True
+        if "address-1: count-2" in msg:
+            return True
+        if "address-3: count-4" in msg:
+            return True
+
+        return False
+
+
+_pymodbus_logger = logging.getLogger("pymodbus.logging")
+_pymodbus_logger.setLevel(logging.DEBUG)
+_pymodbus_logger.propagate = False
+_pymodbus_handler = logging.StreamHandler()
+_pymodbus_handler.setLevel(logging.DEBUG)
+_pymodbus_handler.addFilter(_PymodbusSetValuesFilter())
+_pymodbus_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+_pymodbus_logger.addHandler(_pymodbus_handler)
+
+# Modbus holding register map (0-based).
+REG_SETPOINT_BASES = (0, 1)          # HR0/1 float32 MW setpoint
+REG_RATED_POWER = 2                  # HR2 uint16 kW*10
+REG_CAPACITY = 3                     # HR3 uint16 kWh*10
+REG_SOC_MIN = 4                      # HR4 uint16 %*100
+REG_SOC_MAX = 5                      # HR5 uint16 %*100
+REG_SOC = 14                         # HR14 uint16 %*100
+REG_POWER_BASE = 16                  # HR16/17 float32 MW actual power
+REG_POWER_PAD = 15                   # HR15 pad
 
 
 class BatteryScada:
@@ -75,8 +118,18 @@ class BatteryScada:
         )
         self._last_displayed = None
         self.modbus_retry_delay = 5
+        self.simulation_interval_s = 1.0
+        self.db_write_interval_s = 60.0
+        self.publish_interval_s = 60.0
+        self.log_interval_s = 1.0
+        self._last_db_write = None
+        self._last_publish = None
+        self._last_log = None
+        self._last_schedule_log = None
+        self._last_schedule_value = None
         self.get_current_state_of_charge()
         self.init_modbus_server()
+        self.start_simulation_thread()
 
     def start_modbus_thread(self):
         async def run_server():
@@ -94,30 +147,51 @@ class BatteryScada:
         asyncio.set_event_loop(loop)
         loop.run_until_complete(run_server())
 
+    def start_simulation_thread(self):
+        self.simulation_thread = threading.Thread(
+            target=self._simulation_loop, daemon=True
+        )
+        self.simulation_thread.start()
+
+    def _simulation_loop(self):
+        interval = self.simulation_interval_s
+        next_tick = time.monotonic()
+        while True:
+            try:
+                self.update_actual_battery_state_in_db(dt_seconds=interval)
+            except Exception as e:
+                logging.error(f"Simulation loop error: {e}")
+                logging.error(traceback.format_exc())
+            next_tick += interval
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            else:
+                # If we're behind, reset the schedule to avoid drift.
+                next_tick = time.monotonic()
+
     def init_modbus_server(self):
         try:
             zeros = [0] * 100
 
             def on_hr_write(address, values):
-                # HR10 is our active power setpoint (kW * 10, signed)
-                # In pymodbus 3.x, the address passed here is 1-based, so HR10 comes as address=11
-                SETPOINT_REG = 11  # Changed from 10 to 11 for pymodbus 3.x
+                # HR0/HR1 are our active power setpoint (MW, float32).
+                # In pymodbus 3.x, the address passed here can be 1-based.
+                SETPOINT_BASES = REG_SETPOINT_BASES
                 logging.debug(f"on_hr_write called: address={address}, values={values}")
                 
-                # Check if SETPOINT_REG is within the written range
-                if address <= SETPOINT_REG < address + len(values):
-                    idx = SETPOINT_REG - address
-                    raw = values[idx]
-
-                    # Interpret as signed 16-bit
-                    if raw >= 0x8000:
-                        raw = raw - 0x10000
-
-                    p_kw = raw / 10.0
-                    self.set_active_power_setpoint(p_kw)
-                    logging.info(f"Modbus HR10 (internal addr {SETPOINT_REG}) written: raw={raw}, p_kw={p_kw}")
-                else:
-                    logging.debug(f"Write to address {address} does not affect setpoint register {SETPOINT_REG}")
+                # Need both registers (float32) to decode.
+                for base in SETPOINT_BASES:
+                    if address <= base and address + len(values) >= base + 2:
+                        idx = base - address
+                        regs = values[idx : idx + 2]
+                        p_mw = self._regs_to_float(regs)
+                        p_kw = p_mw * 1000.0
+                        self.set_active_power_setpoint(p_kw)
+                        logging.info(
+                            f"Modbus setpoint (HR0/1) written: mw={p_mw:.3f}, kw={p_kw:.1f}"
+                        )
+                        return
 
             # Create the callback-enabled holding register block
             hr_block = CallbackDataBlock(0, zeros.copy(), on_write=on_hr_write)
@@ -132,6 +206,26 @@ class BatteryScada:
 
             # In pymodbus 3.x, use 'slaves' parameter
             self.context = ModbusServerContext(slaves=store, single=True)
+
+            # Publish static ratings/limits on connect:
+            # HR2 = bess_power_kw * 10
+            # HR3 = bess_capacity_kwh * 10
+            # HR4 = soc_min_percent * 100
+            # HR5 = soc_max_percent * 100
+            rated_power_scaled = int(round(self.bess_power_kw * 10))
+            capacity_scaled = int(round(self.bess_capacity_kwh * 10))
+            soc_min_scaled = int(round(self.soc_min_percent * 100))
+            soc_max_scaled = int(round(self.soc_max_percent * 100))
+            # Clamp to 16-bit unsigned range
+            rated_power_scaled = max(0, min(0xFFFF, rated_power_scaled))
+            capacity_scaled = max(0, min(0xFFFF, capacity_scaled))
+            soc_min_scaled = max(0, min(0xFFFF, soc_min_scaled))
+            soc_max_scaled = max(0, min(0xFFFF, soc_max_scaled))
+            self.context[0x00].setValues(
+                3,
+                REG_RATED_POWER,
+                [rated_power_scaled, capacity_scaled, soc_min_scaled, soc_max_scaled],
+            )
 
             self.modbus_thread = threading.Thread(
                 target=self.start_modbus_thread, daemon=True
@@ -149,6 +243,19 @@ class BatteryScada:
         """
         self.p_setpoint_kw = float(p_kw)
         logging.info(f"New active power setpoint (from Modbus): {self.p_setpoint_kw:.1f} kW")
+
+    @staticmethod
+    def _float_to_regs(value: float) -> list[int]:
+        packed = struct.pack(">f", float(value))
+        hi, lo = struct.unpack(">HH", packed)
+        return [hi, lo]
+
+    @staticmethod
+    def _regs_to_float(regs) -> float:
+        if len(regs) < 2:
+            return 0.0
+        hi, lo = regs[0], regs[1]
+        return struct.unpack(">f", struct.pack(">HH", hi, lo))[0]
 
     def get_current_state_of_charge(self):
         try:
@@ -201,21 +308,59 @@ class BatteryScada:
 
     def actual_battery_state(self):
         timenow = datetime.now()
-        quarter_min = self.lookup_quarterly(timenow.minute)
-        quarter_hour = timenow.hour + 1 if quarter_min == 0 else timenow.hour
-        target_timestamp = timenow.replace(hour=quarter_hour, minute=quarter_min, second=0, microsecond=0)
-        print(f"Target Timestamp: {target_timestamp}")
+        def maybe_log_schedule(message, value):
+            if (
+                self._last_schedule_log is None
+                or (timenow - self._last_schedule_log).total_seconds() >= 60
+                or self._last_schedule_value is None
+                or abs(value - self._last_schedule_value) >= 0.01
+            ):
+                print(message)
+                self._last_schedule_log = timenow
+                self._last_schedule_value = value
         try:
             with SessionLocal() as session:
-                result = session.query(BatterySchedule).filter(
-                    BatterySchedule.timestamp == target_timestamp
-                ).first()
-                if result:
-                    print(f"Schedule for {target_timestamp} is {result.schedule}")
-                    return float(result.schedule)
-                else:
-                    print("No matching schedule found.")
-                    return 0.0
+                prev_row = (
+                    session.query(BatterySchedule)
+                    .filter(BatterySchedule.timestamp <= timenow)
+                    .order_by(BatterySchedule.timestamp.desc())
+                    .first()
+                )
+                next_row = (
+                    session.query(BatterySchedule)
+                    .filter(BatterySchedule.timestamp >= timenow)
+                    .order_by(BatterySchedule.timestamp.asc())
+                    .first()
+                )
+
+                if prev_row and next_row and prev_row.timestamp != next_row.timestamp:
+                    total_seconds = (next_row.timestamp - prev_row.timestamp).total_seconds()
+                    if total_seconds > 0:
+                        elapsed_seconds = (timenow - prev_row.timestamp).total_seconds()
+                        fraction = max(0.0, min(1.0, elapsed_seconds / total_seconds))
+                        interpolated = prev_row.schedule + fraction * (next_row.schedule - prev_row.schedule)
+                        maybe_log_schedule(
+                            f"Schedule interpolated between {prev_row.timestamp} ({prev_row.schedule}) "
+                            f"and {next_row.timestamp} ({next_row.schedule}) -> {interpolated:.2f}",
+                            interpolated,
+                        )
+                        return float(interpolated)
+
+                if prev_row:
+                    maybe_log_schedule(
+                        f"Schedule (hold last) for {prev_row.timestamp} is {prev_row.schedule}",
+                        prev_row.schedule,
+                    )
+                    return float(prev_row.schedule)
+                if next_row:
+                    maybe_log_schedule(
+                        f"Schedule (hold next) for {next_row.timestamp} is {next_row.schedule}",
+                        next_row.schedule,
+                    )
+                    return float(next_row.schedule)
+
+                print("No schedule entries found.")
+                return 0.0
         except Exception as e:
             print(f"Error fetching schedule: {e}")
             return 0.0
@@ -232,8 +377,8 @@ class BatteryScada:
         else:
             raise ValueError("Minutes must be between 0 and 59")
 
-    def update_actual_battery_state_in_db(self):
-        """Compute one-minute step of battery state and honor Modbus overrides.
+    def update_actual_battery_state_in_db(self, dt_seconds: float = 60.0):
+        """Compute one simulation step of battery state and honor Modbus overrides.
 
         Behaviour overview:
         - The baseline power command is read from the schedule table (kW).
@@ -247,7 +392,7 @@ class BatteryScada:
           scheduled value itself does not push outside the band; if it does,
           the command is set to 0 kW for that edge case.
         - The resulting power is applied to compute SoC/energy deltas and is
-          written to the status table with the minute-resolution timestamp.
+          written to the status table on a configurable interval.
         """
 
         baseline_kw = self.actual_battery_state()  # from DB schedule (kW)
@@ -258,49 +403,32 @@ class BatteryScada:
         else:
             requested_power_kw = baseline_kw
 
-        logging.info(
-            f"Baseline (schedule): {baseline_kw:.1f} kW | "
-            f"Requested P (after Modbus): {requested_power_kw:.1f} kW | "
-            f"SoC: {self.state_of_charge:.2f}%"
-        )
+        log_now = datetime.now()
+        if (
+            self._last_log is None
+            or (log_now - self._last_log).total_seconds() >= self.log_interval_s
+        ):
+            logging.info(
+                f"Baseline (schedule): {baseline_kw:.1f} kW | "
+                f"Requested P (after Modbus): {requested_power_kw:.1f} kW | "
+                f"SoC: {self.state_of_charge:.2f}%"
+            )
+            self._last_log = log_now
         
         # Limit power to ± rated power
         requested_power_kw = max(-self.bess_power_kw, min(self.bess_power_kw, requested_power_kw))
         # Enforce SoC band (AS requirement) ----
-        # If a Modbus setpoint is pushing us beyond SoC bounds, fall back to the baseline schedule.
-        while True:
-            limit_hit = False
-            if self.state_of_charge <= self.soc_min_percent and requested_power_kw < 0:
-                if modbus_override:
-                    logging.info(
-                        "Discharge blocked by SoC minimum; reverting to baseline schedule."
-                    )
-                    self.p_setpoint_kw = None
-                    requested_power_kw = baseline_kw
-                    modbus_override = False
-                    limit_hit = True
-                else:
-                    print("Blocking discharge: SoC at/under minimum for AS support.")
-                    requested_power_kw = 0.0
-            if self.state_of_charge >= self.soc_max_percent and requested_power_kw > 0:
-                if modbus_override:
-                    logging.info(
-                        "Charge blocked by SoC maximum; reverting to baseline schedule."
-                    )
-                    self.p_setpoint_kw = None
-                    requested_power_kw = baseline_kw
-                    modbus_override = False
-                    limit_hit = True
-                else:
-                    print("Blocking charge: SoC at/over maximum for AS support.")
-                    requested_power_kw = 0.0
+        # Modbus setpoint always has priority over schedule; if it would
+        # violate SoC limits, clamp to 0 kW (do not revert to schedule).
+        if self.state_of_charge <= self.soc_min_percent and requested_power_kw < 0:
+            logging.info("Discharge blocked by SoC minimum; clamping to 0 kW.")
+            requested_power_kw = 0.0
+        if self.state_of_charge >= self.soc_max_percent and requested_power_kw > 0:
+            logging.info("Charge blocked by SoC maximum; clamping to 0 kW.")
+            requested_power_kw = 0.0
 
-            # After falling back to baseline, re-check limits once to ensure compliance.
-            if not limit_hit:
-                break
-
-        # Compute SoC change for 1 minute step ----        
-        dt_hours = 1.0 / 60.0  # 1 minute step        
+        # Compute SoC change for this step ----
+        dt_hours = dt_seconds / 3600.0
         energy_change_kwh = requested_power_kw * dt_hours  # kW * h = kWh
 
         # Apply round-trip efficiency on charging only (simple model)
@@ -334,21 +462,63 @@ class BatteryScada:
             "invertor_power_kw": round(self.actual_invertor_power, 1),
             "ramp_rate_kw_per_min": None if ramp_rate_kw_per_min is None else round(ramp_rate_kw_per_min, 2),
         }
-        print(f"\033[32m{json.dumps(status_payload)}\033[0m")
 
-        timestamp = timenow.replace(second=0, microsecond=0)
+        # Update Modbus registers immediately each step.
+        # HR14 = SoC (% * 100), HR16/17 = inverter power (MW, float32)
+        soc_scaled = max(0, min(10000, int(self.state_of_charge * 100)))
+        power_mw = self.actual_invertor_power / 1000.0
+        power_regs = self._float_to_regs(power_mw)
         try:
-            with SessionLocal() as session:
-                actual_state_entry = BatteryActualState(
-                    timestamp=timestamp,
-                    battery_state_of_charge_actual=self.state_of_charge,
-                    last_min_flow=self.energy_flow_minute,
-                    invertor_power_actual=self.actual_invertor_power
-                )
-                session.add(actual_state_entry)
-                session.commit()
+            # Write SoC at HR14, pad HR15, then power at HR16/17.
+            self.context[0x00].setValues(
+                3,
+                REG_SOC,
+                [soc_scaled, 0, power_regs[0], power_regs[1]],
+            )
         except Exception as e:
-            logging.error(f"Error saving status to DB: {e}")
+            logging.error(f"Error updating Modbus register: {e}")
+
+        # Throttle DB writes / publishes to configured intervals.
+        if (
+            self._last_db_write is None
+            or (timenow - self._last_db_write).total_seconds() >= self.db_write_interval_s
+        ):
+            timestamp = timenow.replace(second=0, microsecond=0)
+            try:
+                with SessionLocal() as session:
+                    actual_state_entry = BatteryActualState(
+                        timestamp=timestamp,
+                        battery_state_of_charge_actual=self.state_of_charge,
+                        last_min_flow=self.energy_flow_minute,
+                        invertor_power_actual=self.actual_invertor_power,
+                    )
+                    session.add(actual_state_entry)
+                    session.commit()
+                self._last_db_write = timenow
+            except Exception as e:
+                logging.error(f"Error saving status to DB: {e}")
+
+        if (
+            self._last_publish is None
+            or (timenow - self._last_publish).total_seconds() >= self.publish_interval_s
+        ):
+            print(f"\033[32m{json.dumps(status_payload)}\033[0m")
+            self.actual_data = {
+                "devId": self.batt_id,
+                "timestamp": timenow.strftime('%Y-%m-%d %H:%M'),
+                "soc": max(0, min(self.state_of_charge, 100)),
+                "invertor": self.actual_invertor_power,
+            }
+            json_data = json.dumps(self.actual_data)
+            print(f"MQTT: {json_data}")
+            if self.mqtt_client:
+                self.mqtt_client.publish_message(json_data)
+            self.publish_to_blynk(
+                max(0, min(self.state_of_charge, 100)),
+                self.actual_invertor_power,
+                self.energy_flow_minute,
+            )
+            self._last_publish = timenow
 
 
     def fetch_actual_db(self):
@@ -373,7 +543,6 @@ class BatteryScada:
                         "devId": self.batt_id,
                         "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
                         "soc": max(0, min(result.battery_state_of_charge_actual, 100)),
-                        "flow_last_min": result.last_min_flow,
                         "invertor": result.invertor_power_actual
                     }                    
                     json_data = json.dumps(self.actual_data)
@@ -411,58 +580,58 @@ class BatteryScada:
             except requests.exceptions.RequestException:
                 logging.error("Failed to publish %s to Blynk.", pin)
 
-    # def display_data(self, soc, invertor):
-    #     if soc is not None and invertor is not None:
-    #         batt_status = "Idle"
-    #         if invertor > 0:
-    #             batt_status = "Charging"
-    #         elif invertor < 0:
-    #             batt_status = "Discharging"
+    def display_data(self, soc, invertor):
+        if soc is not None and invertor is not None:
+            batt_status = "Idle"
+            if invertor > 0:
+                batt_status = "Charging"
+            elif invertor < 0:
+                batt_status = "Discharging"
 
-    #         current_payload = (soc, invertor)
-    #         if self._last_displayed == current_payload:
-    #             return
-    #         self._last_displayed = current_payload
+            current_payload = (soc, invertor)
+            if self._last_displayed == current_payload:
+                return
+            self._last_displayed = current_payload
 
-    #         script_dir = os.path.dirname(os.path.realpath(__file__))
-    #         picdir = os.path.join(script_dir, 'pic')
-    #         libdir = os.path.join(script_dir, 'lib')
-    #         if os.path.exists(libdir):
-    #             sys.path.append(libdir)
-    #         try:
-    #             epd = epd2in7_V2.EPD()
-    #             epd.init()
-    #             epd.Clear()
-    #             font_path = os.path.join(picdir, 'Font.ttc')
-    #             try:
-    #                 font24 = ImageFont.truetype(font_path, 24)
-    #                 font20 = ImageFont.truetype(font_path, 18)
-    #             except IOError:
-    #                 font24 = ImageFont.load_default()
-    #                 font20 = ImageFont.load_default()
-    #             image = Image.new('1', (epd.height, epd.width), 255)
-    #             draw = ImageDraw.Draw(image)
-    #             current_time = time.strftime('%d-%m-%Y %H:%M')
-    #             cell_width = 80
-    #             cell_height = 40
-    #             draw.rectangle((0, 0, epd.height, epd.width), fill=255)
-    #             draw.rectangle((0, 0, cell_width, cell_height), outline=0)
-    #             draw.text((8, 10), "Battery1", font=font20, fill=0)
-    #             draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
-    #             draw.text((90, 10), "100MW/h", font=font20, fill=0)
-    #             draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
-    #             draw.text((190, 10), "25MW", font=font20, fill=0)
-    #             draw.text((8, 45), current_time, font=font20, fill=0)
-    #             draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
-    #             draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
-    #             epd.display(epd.getbuffer(image))
-    #         except IOError as e:
-    #             logging.info(e)
-    #             logging.error(traceback.format_exc())
-    #         except KeyboardInterrupt:
-    #             logging.info("ctrl + c:")
-    #             epd2in7_V2.epdconfig.module_exit(cleanup=True)
-    #             exit()
+            script_dir = os.path.dirname(os.path.realpath(__file__))
+            picdir = os.path.join(script_dir, 'pic')
+            libdir = os.path.join(script_dir, 'lib')
+            if os.path.exists(libdir):
+                sys.path.append(libdir)
+            try:
+                epd = epd2in7_V2.EPD()
+                epd.init()
+                epd.Clear()
+                font_path = os.path.join(picdir, 'Font.ttc')
+                try:
+                    font24 = ImageFont.truetype(font_path, 24)
+                    font20 = ImageFont.truetype(font_path, 18)
+                except IOError:
+                    font24 = ImageFont.load_default()
+                    font20 = ImageFont.load_default()
+                image = Image.new('1', (epd.height, epd.width), 255)
+                draw = ImageDraw.Draw(image)
+                current_time = time.strftime('%d-%m-%Y %H:%M')
+                cell_width = 80
+                cell_height = 40
+                draw.rectangle((0, 0, epd.height, epd.width), fill=255)
+                draw.rectangle((0, 0, cell_width, cell_height), outline=0)
+                draw.text((8, 10), "Battery1", font=font20, fill=0)
+                draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
+                draw.text((90, 10), "100MW/h", font=font20, fill=0)
+                draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
+                draw.text((190, 10), "25MW", font=font20, fill=0)
+                draw.text((8, 45), current_time, font=font20, fill=0)
+                draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
+                draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
+                epd.display(epd.getbuffer(image))
+            except IOError as e:
+                logging.info(e)
+                logging.error(traceback.format_exc())
+            except KeyboardInterrupt:
+                logging.info("ctrl + c:")
+                epd2in7_V2.epdconfig.module_exit(cleanup=True)
+                exit()
 
     def empty_table(self):
         try:
@@ -503,8 +672,6 @@ if __name__ == "__main__":
     test = BatteryScada(batt_id="batt1", round_trip=0.97, mqtt_client=mqtt_client)
     scheduler = BackgroundScheduler()    
     scheduler.add_job(test.fetch_schedule_endpoint, CronTrigger(minute='*'))
-    scheduler.add_job(test.update_actual_battery_state_in_db, CronTrigger(minute='*'))
-    scheduler.add_job(test.fetch_actual_db, CronTrigger(minute='*'))
     scheduler.start()
 
     try:
