@@ -518,6 +518,10 @@ class BatteryScada:
                 self.actual_invertor_power,
                 self.energy_flow_minute,
             )
+            self.display_data(
+                max(0, min(self.state_of_charge, 100)),
+                self.actual_invertor_power,
+            )
             self._last_publish = timenow
 
 
