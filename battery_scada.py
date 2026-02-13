@@ -626,8 +626,8 @@ class BatteryScada:
                 draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
                 draw.text((190, 10), "25MW", font=font20, fill=0)
                 draw.text((8, 45), current_time, font=font20, fill=0)
-                draw.text((8, 90), f"SoC: {soc} MW/h", font=font20, fill=0)
-                draw.text((8, 120), f"{batt_status}: {invertor} MW", font=font20, fill=0)
+                draw.text((8, 90), f"SoC: {soc:.2f} MW/h", font=font20, fill=0)
+                draw.text((8, 120), f"{batt_status}: {invertor:.2f} MW", font=font20, fill=0)
                 epd.display(epd.getbuffer(image))
             except IOError as e:
                 logging.info(e)
