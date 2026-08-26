@@ -43,7 +43,7 @@ ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribut
 INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
 ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
 ^C^CTraceback (most recent call last):
-  File "/home/entra/BESS/battery_scada.py", line 621, in <module>
+"/home/entra/BESS/battery_scada.py", line 621, in <module>
     time.sleep(1)
     ~~~~~~~~~~^^^
 KeyboardInterrupt
