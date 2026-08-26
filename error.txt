@@ -48,3 +48,4 @@ ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribut
     ~~~~~~~~~~^^^
 KeyboardInterrupt
 
+python -c "import pymodbus; print(pymodbus.__version__)"
