@@ -2,10 +2,10 @@ import time
 import struct
 from pymodbus.client import ModbusTcpClient
 
-#HOST = "85.14.6.37"
-HOST = "127.0.0.1"
-PORT = 5020
-#PORT = 16598
+HOST = "85.14.6.37"
+# HOST = "127.0.0.1"
+# PORT = 5020
+PORT = 16598
 DP_BESS_MV_ADDR = 0  # float32 MW at HR0/1 (setpoint)
 SOC_REG = 14      # uint16 % * 100 at HR14
 POWER_REG = 16    # float32 MW at HR16/17
