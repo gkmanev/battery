@@ -1,0 +1,50 @@
+python3 battery_scada.py
+<database.BatteryActualState object at 0x7ffee0c8c1a0>
+Current SoC: 25.0
+ERROR:root:Error initializing Modbus server: 0 <= address < 65535
+ERROR:root:Traceback (most recent call last):
+  File "/home/entra/BESS/battery_scada.py", line 193, in init_modbus_server
+    hr_block = CallbackDataBlock(0, zeros.copy(), on_write=on_hr_write)
+  File "/home/entra/BESS/battery_scada.py", line 594, in __init__
+    super().__init__(address, values)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/entra/BESS/.venv/lib/python3.13/site-packages/pymodbus/datastore/sequential.py", line 18, in __init__
+    SimData(address - 1, values=values, datatype=DataType.REGISTERS)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 9, in __init__
+  File "/home/entra/BESS/.venv/lib/python3.13/site-packages/pymodbus/simulator/simdata.py", line 179, in __post_init__
+    self.__check_parameters()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/entra/BESS/.venv/lib/python3.13/site-packages/pymodbus/simulator/simdata.py", line 160, in __check_parameters
+    self.__check_simple()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/home/entra/BESS/.venv/lib/python3.13/site-packages/pymodbus/simulator/simdata.py", line 142, in __check_simple
+    raise TypeError("0 <= address < 65535")
+TypeError: 0 <= address < 65535
+
+Schedule (hold last) for 2026-02-13 23:45:00 is 0.0
+INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+Connected to MQTT broker at 159.89.103.242:1883
+{"soc_percent": 25.0, "bess_capacity_kwh": 1000.0, "invertor_power_kw": 0.0, "ramp_rate_kw_per_min": null}
+MQTT: {"devId": "batt1", "timestamp": "2026-08-26 16:13", "soc": 25.0, "invertor": 0.0}
+Message '{"devId": "batt1", "timestamp": "2026-08-26 16:13", "soc": 25.0, "invertor": 0.0}' sent to topic 'battery_scada/batt-0001'
+WARNING:root:BLYNK token not configured; skipping publish.
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+INFO:root:Baseline (schedule): 0.0 kW | Requested P (after Modbus): 0.0 kW | SoC: 25.00%
+ERROR:root:Error updating Modbus register: 'BatteryScada' object has no attribute 'context'
+^C^CTraceback (most recent call last):
+  File "/home/entra/BESS/battery_scada.py", line 621, in <module>
+    time.sleep(1)
+    ~~~~~~~~~~^^^
+KeyboardInterrupt
+
