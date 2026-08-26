@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import traceback
@@ -15,7 +14,6 @@ import pandas as pd
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from PIL import Image, ImageDraw, ImageFont
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
 try:
     # pymodbus 2.x
@@ -26,7 +24,6 @@ except ImportError:
     from pymodbus.datastore import ModbusDeviceContext as _DeviceContext
     HAVE_SLAVE_CTX = False
 from pymodbus.server import StartAsyncTcpServer
-from waveshare_epd import epd2in7_V2
 
 from database import BatteryActualState, BatterySchedule, SessionLocal
 from mqtt_client import MqttClient
@@ -116,7 +113,6 @@ class BatteryScada:
         self.mqtt_topic = mqtt_topic or os.getenv(
             "BATTERY_MQTT_TOPIC", f"battery_scada/{self.batt_id}"
         )
-        self._last_displayed = None
         self.modbus_retry_delay = 5
         self.simulation_interval_s = 1.0
         self.db_write_interval_s = 60.0
@@ -518,10 +514,6 @@ class BatteryScada:
                 self.actual_invertor_power,
                 self.energy_flow_minute,
             )
-            self.display_data(
-                max(0, min(self.state_of_charge, 100)),
-                self.actual_invertor_power,
-            )
             self._last_publish = timenow
 
 
@@ -553,7 +545,6 @@ class BatteryScada:
                     print(f"MQTT: {json_data}")
                     if self.mqtt_client:
                         self.mqtt_client.publish_message(json_data)
-                    #self.display_data(max(0, min(result.battery_state_of_charge_actual, 100)), result.invertor_power_actual)
                     self.publish_to_blynk(
                         max(0, min(result.battery_state_of_charge_actual, 100)),
                         result.invertor_power_actual,
@@ -583,59 +574,6 @@ class BatteryScada:
                 #print(f"Published {pin}: {value}, Status Code: {response.status_code}")
             except requests.exceptions.RequestException:
                 logging.error("Failed to publish %s to Blynk.", pin)
-
-    def display_data(self, soc, invertor):
-        if soc is not None and invertor is not None:
-            batt_status = "Idle"
-            if invertor > 0:
-                batt_status = "Charging"
-            elif invertor < 0:
-                batt_status = "Discharging"
-
-            current_payload = (soc, invertor)
-            if self._last_displayed == current_payload:
-                return
-            self._last_displayed = current_payload
-
-            script_dir = os.path.dirname(os.path.realpath(__file__))
-            picdir = os.path.join(script_dir, 'pic')
-            libdir = os.path.join(script_dir, 'lib')
-            if os.path.exists(libdir):
-                sys.path.append(libdir)
-            try:
-                epd = epd2in7_V2.EPD()
-                epd.init()
-                epd.Clear()
-                font_path = os.path.join(picdir, 'Font.ttc')
-                try:
-                    font24 = ImageFont.truetype(font_path, 24)
-                    font20 = ImageFont.truetype(font_path, 18)
-                except IOError:
-                    font24 = ImageFont.load_default()
-                    font20 = ImageFont.load_default()
-                image = Image.new('1', (epd.height, epd.width), 255)
-                draw = ImageDraw.Draw(image)
-                current_time = time.strftime('%d-%m-%Y %H:%M')
-                cell_width = 80
-                cell_height = 40
-                draw.rectangle((0, 0, epd.height, epd.width), fill=255)
-                draw.rectangle((0, 0, cell_width, cell_height), outline=0)
-                draw.text((8, 10), "Battery1", font=font20, fill=0)
-                draw.rectangle((cell_width, 0, cell_width * 2+20, cell_height), outline=0)
-                draw.text((90, 10), "100MW/h", font=font20, fill=0)
-                draw.rectangle((cell_width, 0, cell_width * 3 +20, cell_height), outline=0)
-                draw.text((190, 10), "25MW", font=font20, fill=0)
-                draw.text((8, 45), current_time, font=font20, fill=0)
-                draw.text((8, 90), f"SoC: {soc:.2f} MW/h", font=font20, fill=0)
-                draw.text((8, 120), f"{batt_status}: {invertor:.2f} MW", font=font20, fill=0)
-                epd.display(epd.getbuffer(image))
-            except IOError as e:
-                logging.info(e)
-                logging.error(traceback.format_exc())
-            except KeyboardInterrupt:
-                logging.info("ctrl + c:")
-                epd2in7_V2.epdconfig.module_exit(cleanup=True)
-                exit()
 
     def empty_table(self):
         try:
