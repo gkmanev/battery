@@ -2,10 +2,10 @@ import time
 import struct
 from pymodbus.client import ModbusTcpClient
 
-HOST = "85.14.6.37"
-# HOST = "127.0.0.1"
-# PORT = 5020
-PORT = 16598
+#HOST = "85.14.6.37"
+HOST = "192.168.1.4"
+PORT = 5020
+#PORT = 16598
 DP_BESS_MV_ADDR = 0  # float32 MW at HR0/1 (setpoint)
 SOC_REG = 14      # uint16 % * 100 at HR14
 POWER_REG = 16    # float32 MW at HR16/17
@@ -14,7 +14,7 @@ CAPACITY_REG = 3
 SOC_MIN_REG = 4
 SOC_MAX_REG = 5
 # Set this to the desired initial setpoint (MW) to send once on connect.
-DP_BESS_MV = -0.10
+DP_BESS_MV = 0.25
 
 client = ModbusTcpClient(host=HOST, port=PORT)
 client.connect()

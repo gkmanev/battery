@@ -12,6 +12,7 @@ from typing import Optional
 from dotenv import load_dotenv
 import pandas as pd
 import requests
+import xlrd
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
@@ -26,7 +27,6 @@ except ImportError:
 from pymodbus.server import StartAsyncTcpServer
 
 from database import BatteryActualState, BatterySchedule, SessionLocal
-from mqtt_client import MqttClient
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -80,10 +80,8 @@ class BatteryScada:
         batt_id: str,
         round_trip: float = 1,
         *,
-        mqtt_client: Optional[MqttClient] = None,
-        schedule_url: Optional[str] = None,
+        schedule_file: Optional[str] = None,
         blynk_token: Optional[str] = None,
-        mqtt_topic: Optional[str] = None,
         soc_min_percent: float = 25.0,
         soc_max_percent: float = 80.0,
         bess_power_kw: float = 1000.0,  # 1 MW
@@ -94,7 +92,6 @@ class BatteryScada:
         self.excel_workbook = None
         self.actual_invertor_power = 0
         self.round_trip = round_trip
-        self.actual_data = {}
         self.batt_id = batt_id
         self.soc_min_percent = soc_min_percent
         self.soc_max_percent = soc_max_percent
@@ -105,14 +102,13 @@ class BatteryScada:
         self._last_power_timestamp = None
 
         self.modbus_thread = None
-        self.mqtt_client = mqtt_client
-        self.schedule_url = schedule_url or os.getenv(
-            "BATTERY_SCHEDULE_URL", "http://85.14.6.37:16543/api/schedule/"
+        default_schedule_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "schedules", "batt2.xls"
+        )
+        self.schedule_file = schedule_file or os.getenv(
+            "BATTERY_SCHEDULE_FILE", default_schedule_file
         )
         self.blynk_token = blynk_token or os.getenv("BLYNK_TOKEN")
-        self.mqtt_topic = mqtt_topic or os.getenv(
-            "BATTERY_MQTT_TOPIC", f"battery_scada/{self.batt_id}"
-        )
         self.modbus_retry_delay = 5
         self.simulation_interval_s = 1.0
         self.db_write_interval_s = 60.0
@@ -267,22 +263,33 @@ class BatteryScada:
             print(f"Error fetching schedule: {e}")
             return None
 
-    def fetch_schedule_endpoint(self):
+    def load_schedule_file(self):
+        """Load tomorrow's 15-minute schedule from the local batt2.xls file."""
         try:
-            response = requests.get(self.schedule_url, timeout=10)
-            data = response.json()            
-            filtered_data = [entry for entry in data if entry['devId'] == self.batt_id]
-            df = pd.DataFrame(filtered_data)            
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df.set_index('timestamp', inplace=True)
-            df = df[['invertor']]
-            df['timestamp'] = df.index
-            df = df.rename(columns={'invertor': 'schedule'})
-            df = df.reset_index(drop=True)
-            df = df[['timestamp', 'schedule']]            
+            if not os.path.isfile(self.schedule_file):
+                raise FileNotFoundError(f"Schedule file not found: {self.schedule_file}")
+
+            worksheet = xlrd.open_workbook(self.schedule_file).sheet_by_index(0)
+            first_schedule_column = 3  # Excel column C; matches the legacy batt2 loader.
+            period_count = 96
+            if worksheet.nrows <= 10 or worksheet.ncols < first_schedule_column + period_count:
+                raise ValueError("batt2.xls does not contain 96 schedule values on row 11")
+
+            schedule_values = [
+                float(worksheet.cell_value(10, first_schedule_column + index))
+                for index in range(period_count)
+            ]
+            tomorrow = datetime.now().date() + timedelta(days=1)
+            timestamps = pd.date_range(
+                start=f"{tomorrow.isoformat()}T01:15:00",
+                periods=period_count,
+                freq="15min",
+            )
+            df = pd.DataFrame({"timestamp": timestamps, "schedule": schedule_values})
             self.save_to_db(df)
+            logging.info("Loaded %s schedule entries from %s", len(df), self.schedule_file)
         except Exception as e:
-            logging.error(f"Error occurred while fetching the endpoint: {e}")
+            logging.error("Error loading schedule file %s: %s", self.schedule_file, e)
 
     def save_to_db(self, df):
         try:
@@ -499,16 +506,6 @@ class BatteryScada:
             or (timenow - self._last_publish).total_seconds() >= self.publish_interval_s
         ):
             print(f"\033[32m{json.dumps(status_payload)}\033[0m")
-            self.actual_data = {
-                "devId": self.batt_id,
-                "timestamp": timenow.strftime('%Y-%m-%d %H:%M'),
-                "soc": max(0, min(self.state_of_charge, 100)),
-                "invertor": self.actual_invertor_power,
-            }
-            json_data = json.dumps(self.actual_data)
-            print(f"MQTT: {json_data}")
-            if self.mqtt_client:
-                self.mqtt_client.publish_message(json_data)
             self.publish_to_blynk(
                 max(0, min(self.state_of_charge, 100)),
                 self.actual_invertor_power,
@@ -535,16 +532,6 @@ class BatteryScada:
                         self.context[0x00].setValues(3, 0, [soc_scaled, power_scaled])
                     except Exception as e:
                         logging.error(f"Error updating Modbus register: {e}")
-                    self.actual_data = {
-                        "devId": self.batt_id,
-                        "timestamp": result.timestamp.strftime('%Y-%m-%d %H:%M'),
-                        "soc": max(0, min(result.battery_state_of_charge_actual, 100)),
-                        "invertor": result.invertor_power_actual
-                    }                    
-                    json_data = json.dumps(self.actual_data)
-                    print(f"MQTT: {json_data}")
-                    if self.mqtt_client:
-                        self.mqtt_client.publish_message(json_data)
                     self.publish_to_blynk(
                         max(0, min(result.battery_state_of_charge_actual, 100)),
                         result.invertor_power_actual,
@@ -609,11 +596,10 @@ class CallbackDataBlock(ModbusSequentialDataBlock):
 
 if __name__ == "__main__":
 
-    mqtt_client = MqttClient("159.89.103.242", 1883, "battery_scada/batt-0001")
-    mqtt_client.connect_client()
-    test = BatteryScada(batt_id="batt1", round_trip=0.97, mqtt_client=mqtt_client)
+    test = BatteryScada(batt_id="batt1", round_trip=0.97)
+    test.load_schedule_file()
     scheduler = BackgroundScheduler()    
-    scheduler.add_job(test.fetch_schedule_endpoint, CronTrigger(minute='*'))
+    scheduler.add_job(test.load_schedule_file, CronTrigger(hour=18, minute=30))
     scheduler.start()
 
     try:
@@ -621,4 +607,3 @@ if __name__ == "__main__":
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
-        mqtt_client.disconnect_client()
