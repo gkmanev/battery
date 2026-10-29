@@ -15,16 +15,9 @@ import requests
 import xlrd
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
-try:
-    # pymodbus 2.x
-    from pymodbus.datastore import ModbusSlaveContext
-    HAVE_SLAVE_CTX = True
-except ImportError:
-    # pymodbus 3.x+
-    from pymodbus.datastore import ModbusDeviceContext as _DeviceContext
-    HAVE_SLAVE_CTX = False
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext
 from pymodbus.server import StartAsyncTcpServer
+import modbus_registers as registers
 
 from database import BatteryActualState, BatterySchedule, SessionLocal
 load_dotenv()
@@ -43,12 +36,10 @@ class _PymodbusSetValuesFilter(logging.Filter):
         if "setValues" not in msg:
             return False
 
-        # Show status writes (SoC + power), setpoint writes, and startup ratings.
-        if "address-15: count-4" in msg or "address-14: count-4" in msg:
-            return True
+        # Show MV setpoint writes and startup ratings; avoid 5 Hz status noise.
         if "address-1: count-2" in msg:
             return True
-        if "address-3: count-4" in msg:
+        if "address-21: count-4" in msg:
             return True
 
         return False
@@ -62,17 +53,6 @@ _pymodbus_handler.setLevel(logging.DEBUG)
 _pymodbus_handler.addFilter(_PymodbusSetValuesFilter())
 _pymodbus_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
 _pymodbus_logger.addHandler(_pymodbus_handler)
-
-# Modbus holding register map (0-based).
-REG_SETPOINT_BASES = (0, 1)          # HR0/1 float32 MW setpoint
-REG_RATED_POWER = 2                  # HR2 uint16 kW*10
-REG_CAPACITY = 3                     # HR3 uint16 kWh*10
-REG_SOC_MIN = 4                      # HR4 uint16 %*100
-REG_SOC_MAX = 5                      # HR5 uint16 %*100
-REG_SOC = 14                         # HR14 uint16 %*100
-REG_POWER_BASE = 16                  # HR16/17 float32 MW actual power
-REG_POWER_PAD = 15                   # HR15 pad
-
 
 class BatteryScada:
     def __init__(
@@ -98,6 +78,8 @@ class BatteryScada:
         self.bess_power_kw = bess_power_kw
         self.bess_capacity_kwh = bess_capacity_kwh
         self.p_setpoint_kw = None  # active power setpoint from Modbus or schedule (kW)
+        # WT is an interface placeholder: no plant model is connected.
+        self.wt_setpoint_mw = None
         self._last_power_kw = None
         self._last_power_timestamp = None
 
@@ -110,7 +92,7 @@ class BatteryScada:
         )
         self.blynk_token = blynk_token or os.getenv("BLYNK_TOKEN")
         self.modbus_retry_delay = 5
-        self.simulation_interval_s = 1.0
+        self.simulation_interval_s = registers.BESS_UPDATE_INTERVAL_S
         self.db_write_interval_s = 60.0
         self.publish_interval_s = 60.0
         self.log_interval_s = 1.0
@@ -122,6 +104,38 @@ class BatteryScada:
         self.get_current_state_of_charge()
         self.init_modbus_server()
         self.start_simulation_thread()
+        self.telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
+        self.telemetry_thread.start()
+
+    def publish_modbus_status(self):
+        """Publish MV SoC (%), P (MW), and Q (MVAr) as float32 values."""
+        self.context[0x00].setValues(
+            3,
+            registers.SOC_BESS_MV,
+            self._float_to_regs(max(0.0, min(100.0, self.state_of_charge)))
+            + self._float_to_regs(self.actual_invertor_power / 1000.0)
+            + self._float_to_regs(0.0),  # No reactive power model.
+        )
+
+    def _telemetry_loop(self):
+        """Keep Modbus publication independent of database/Blynk I/O delays."""
+        next_tick = time.monotonic()
+        next_wt_tick = next_tick
+        while True:
+            try:
+                self.publish_modbus_status()
+                if time.monotonic() >= next_wt_tick:
+                    # No WT source is connected: P, Q, V, and F stay zero.
+                    self.context[0x00].setValues(3, registers.P_WT, [0] * 8)
+                    next_wt_tick = time.monotonic() + 1.0
+            except Exception:
+                logging.exception("Error publishing Modbus telemetry")
+            next_tick += registers.BESS_UPDATE_INTERVAL_S
+            delay = next_tick - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_tick = time.monotonic()
 
     def start_modbus_thread(self):
         async def run_server():
@@ -167,23 +181,19 @@ class BatteryScada:
             zeros = [0] * 100
 
             def on_hr_write(address, values):
-                # HR0/HR1 are our active power setpoint (MW, float32).
-                # In pymodbus 3.x, the address passed here can be 1-based.
-                SETPOINT_BASES = REG_SETPOINT_BASES
-                logging.debug(f"on_hr_write called: address={address}, values={values}")
-                
-                # Need both registers (float32) to decode.
-                for base in SETPOINT_BASES:
+                # pymodbus 3.8.6 adds one before calling the datastore.
+                address -= 1
+                # Commands must contain both words of a float32 (FC16).
+                for base in (registers.DP_BESS_MV, registers.DP_WT_MV):
                     if address <= base and address + len(values) >= base + 2:
                         idx = base - address
                         regs = values[idx : idx + 2]
                         p_mw = self._regs_to_float(regs)
-                        p_kw = p_mw * 1000.0
-                        self.set_active_power_setpoint(p_kw)
-                        logging.info(
-                            f"Modbus setpoint (HR0/1) written: mw={p_mw:.3f}, kw={p_kw:.1f}"
-                        )
-                        return
+                        if base == registers.DP_BESS_MV:
+                            self.set_active_power_setpoint(p_mw * 1000.0)
+                        else:
+                            self.wt_setpoint_mw = p_mw
+                            logging.warning("WT setpoint stored (%s MW); no WT model connected", p_mw)
 
             # Create the callback-enabled holding register block
             hr_block = CallbackDataBlock(0, zeros.copy(), on_write=on_hr_write)
@@ -199,25 +209,16 @@ class BatteryScada:
             # In pymodbus 3.x, use 'slaves' parameter
             self.context = ModbusServerContext(slaves=store, single=True)
 
-            # Publish static ratings/limits on connect:
-            # HR2 = bess_power_kw * 10
-            # HR3 = bess_capacity_kwh * 10
-            # HR4 = soc_min_percent * 100
-            # HR5 = soc_max_percent * 100
-            rated_power_scaled = int(round(self.bess_power_kw * 10))
-            capacity_scaled = int(round(self.bess_capacity_kwh * 10))
-            soc_min_scaled = int(round(self.soc_min_percent * 100))
-            soc_max_scaled = int(round(self.soc_max_percent * 100))
-            # Clamp to 16-bit unsigned range
-            rated_power_scaled = max(0, min(0xFFFF, rated_power_scaled))
-            capacity_scaled = max(0, min(0xFFFF, capacity_scaled))
-            soc_min_scaled = max(0, min(0xFFFF, soc_min_scaled))
-            soc_max_scaled = max(0, min(0xFFFF, soc_max_scaled))
+            # Static values are available before clients connect, without scaling.
             self.context[0x00].setValues(
                 3,
-                REG_RATED_POWER,
-                [rated_power_scaled, capacity_scaled, soc_min_scaled, soc_max_scaled],
+                registers.SOC_MAX_BESS_MV,
+                [max(0, min(0xFFFF, int(round(value)))) for value in (
+                    self.soc_max_percent, self.soc_min_percent,
+                    self.bess_power_kw, self.bess_capacity_kwh,
+                )],
             )
+            self.publish_modbus_status()
 
             self.modbus_thread = threading.Thread(
                 target=self.start_modbus_thread, daemon=True
@@ -380,20 +381,14 @@ class BatteryScada:
         else:
             raise ValueError("Minutes must be between 0 and 59")
 
-    def update_actual_battery_state_in_db(self, dt_seconds: float = 60.0):
+    def update_actual_battery_state_in_db(self, dt_seconds: float = registers.BESS_UPDATE_INTERVAL_S):
         """Compute one simulation step of battery state and honor Modbus overrides.
 
         Behaviour overview:
         - The baseline power command is read from the schedule table (kW).
-        - A Modbus write to HR10 overrides that baseline until it is cleared.
+        - A float32 Modbus write to HR0/1 overrides that baseline.
         - The requested power is clipped to the inverter rating (±bess_power_kw).
-        - If an override would violate the SoC band, the override is cleared and
-          we immediately fall back to the baseline schedule for this step.
-            * Discharge beyond ``soc_min_percent`` → revert to baseline.
-            * Charge beyond ``soc_max_percent`` → revert to baseline.
-        - After reverting we re-check the SoC limits once to ensure the
-          scheduled value itself does not push outside the band; if it does,
-          the command is set to 0 kW for that edge case.
+        - At a SoC boundary power is clamped to zero; overrides remain active.
         - The resulting power is applied to compute SoC/energy deltas and is
           written to the status table on a configurable interval.
         """
@@ -466,20 +461,7 @@ class BatteryScada:
             "ramp_rate_kw_per_min": None if ramp_rate_kw_per_min is None else round(ramp_rate_kw_per_min, 2),
         }
 
-        # Update Modbus registers immediately each step.
-        # HR14 = SoC (% * 100), HR16/17 = inverter power (MW, float32)
-        soc_scaled = max(0, min(10000, int(self.state_of_charge * 100)))
-        power_mw = self.actual_invertor_power / 1000.0
-        power_regs = self._float_to_regs(power_mw)
-        try:
-            # Write SoC at HR14, pad HR15, then power at HR16/17.
-            self.context[0x00].setValues(
-                3,
-                REG_SOC,
-                [soc_scaled, 0, power_regs[0], power_regs[1]],
-            )
-        except Exception as e:
-            logging.error(f"Error updating Modbus register: {e}")
+        # A separate 200 ms loop publishes Modbus telemetry.
 
         # Throttle DB writes / publishes to configured intervals.
         if (
@@ -525,11 +507,13 @@ class BatteryScada:
                     BatteryActualState.timestamp == timestamp_previous_min
                 ).first()
                 if result:
-                    soc_scaled = max(0, min(10000, int(result.battery_state_of_charge_actual * 100)))  # 0-10000
-                    power_scaled = int(result.invertor_power_actual * 10)  # kW * 10
-
                     try:
-                        self.context[0x00].setValues(3, 0, [soc_scaled, power_scaled])
+                        self.context[0x00].setValues(
+                            3, registers.SOC_BESS_MV,
+                            self._float_to_regs(result.battery_state_of_charge_actual)
+                            + self._float_to_regs(result.invertor_power_actual / 1000.0)
+                            + self._float_to_regs(0.0),
+                        )
                     except Exception as e:
                         logging.error(f"Error updating Modbus register: {e}")
                     self.publish_to_blynk(
@@ -580,6 +564,13 @@ class CallbackDataBlock(ModbusSequentialDataBlock):
     def __init__(self, address, values, on_write=None):
         super().__init__(address, values)
         self.on_write = on_write
+
+    def validate(self, address, count=1):
+        # pymodbus has already added one to the wire address here.
+        # Only HR0-3 and HR6-23 belong to the single-battery interface.
+        in_map = any(start <= address and address + count <= end
+                     for start, end in ((1, 5), (7, 25)))
+        return in_map and super().validate(address, count)
 
     def setValues(self, address, values):
         # Let the parent store the values
